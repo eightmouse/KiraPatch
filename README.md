@@ -1,3 +1,5 @@
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg) ![Python](https://img.shields.io/badge/python-3.8+-blue.svg)
+
 # Disclaimer
 This project is for educational and archival purposes. 
 
@@ -83,3 +85,8 @@ This tool converts `1 in N` to the nearest threshold with:
 python --version
 python shiny_patcher.py --help
 ```
+
+---
+
+## License
+Distributed under the MIT License. See `LICENSE` for more information.
