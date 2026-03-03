@@ -1,4 +1,10 @@
-![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg) ![Python](https://img.shields.io/badge/python-3.8+-blue.svg)
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg) 
+![Python](https://img.shields.io/badge/python-3.8+-blue.svg)
+![Support](https://img.shields.io/badge/Support-None-lightgrey.svg)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)
+![Target](https://img.shields.io/badge/Target-GBA-orange)
+![Views](https://api.visitorbadge.io/api/combined?path=https%3A%2F%2Fgithub.com%2Feightmouse%2Fshiny_patcher&labelColor=%2337d67a&countColor=%23263238&style=flat)
+
 
 # Disclaimer
 This project is for educational and archival purposes. 
