@@ -1,4 +1,18 @@
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg) 
+![Python](https://img.shields.io/badge/python-3.8+-blue.svg)
+![Target](https://img.shields.io/badge/Target-GBA-orange)
+![Stage](https://img.shields.io/badge/Stage-Archived-brown.svg)
+![Support](https://img.shields.io/badge/Support-None-lightgrey.svg)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)
+[![Support me on Ko-fi](https://img.shields.io/badge/Support%20Me-Ko--fi-F16061?logo=ko-fi&logoColor=white)](https://ko-fi.com/eightmouse)
+
+
+# Disclaimer
+This project is for educational and archival purposes. 
+
 # Gen 3 Shiny Odds CLI Patcher
+It's a small script I made a while ago as practice.
+Works with European and USA versions only, haven't checked JP at all, feel free to fork and add it!
 
 Safe shiny-odds patcher for Pokemon Gen 3 GBA ROMs:
 - FireRed
@@ -79,6 +93,7 @@ python --version
 python shiny_patcher.py --help
 ```
 
+<<<<<<< HEAD
 ## Drag-and-drop launcher (Windows)
 
 Use [patch_drag_drop.bat](patch_drag_drop.bat) for simple usage:
@@ -95,3 +110,9 @@ Example values:
 - `odds=8192` (vanilla)
 - `odds=4096`
 - `odds=2048`
+=======
+---
+
+## License
+Distributed under the MIT License. See `LICENSE` for more information.
+>>>>>>> 7e40c940f534d4fc5881bd40314f738034d1f656
