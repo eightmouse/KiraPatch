@@ -10,7 +10,7 @@
 # Disclaimer
 This project is for educational and archival purposes. 
 
-# Gen 3 Shiny Odds CLI Patcher
+## Gen 3 Shiny Odds CLI Patcher
 KiraPatch is a high-precision CLI utility for modifying Shiny encounter rates in Generation 3 Pokémon ROMs. 
 It uses CRC32 validation to ensure patches are only applied to clean, compatible revisions.
 
