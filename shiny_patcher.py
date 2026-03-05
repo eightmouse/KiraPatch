@@ -604,6 +604,8 @@ def patch_rom(
     print(f"  Applied threshold: {plan.threshold} (base game is {BASE_THRESHOLD})")
     print(f"  Effective shiny bits: {plan.effective_bits}")
     print(f"  Effective odds: ~1/{plan.effective_one_in:.3f}")
+    if plan.applied_mode == "reroll" and plan.effective_bits < 16:
+        print("  Compatibility: modified shiny check; PKHeX may not mark these as shiny.")
     print(f"  Output ROM: {output_path}")
     print(f"  Output CRC32: 0x{new_crc:08X}")
     print("")

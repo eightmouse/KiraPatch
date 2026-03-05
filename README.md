@@ -1,4 +1,4 @@
-![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+﻿![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Python](https://img.shields.io/badge/python-3.8+-blue.svg)
 ![Target](https://img.shields.io/badge/Target-GBA-orange)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)
@@ -56,8 +56,12 @@ Default output naming:
 - `native`: vanilla-style threshold compares only.
   - Max representable threshold is `255`, so the best native rate is about `1/257`.
   - Requests above that rate (for example `1/256`, `1/16`) return an error.
-- `reroll`: high-rate mode for stronger shiny rates.
+- `reroll`: high-rate mode for stronger shiny rates by modifying the in-game shiny check.
 - `auto`: chooses `native` when possible, otherwise `reroll`.
+
+PKHeX compatibility note:
+- `native`: PKHeX-compatible shiny logic.
+- `reroll`/`auto` at high rates: game can show shiny, but PKHeX may not mark those Pokemon as shiny.
 
 Patch summary reports:
 - requested mode
