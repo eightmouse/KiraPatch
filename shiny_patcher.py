@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import binascii
 from dataclasses import dataclass
+
 from pathlib import Path
 from typing import Iterable
 
@@ -151,6 +152,21 @@ ROM_SPECS: tuple[RomSpec, ...] = (
 
 ROM_SPECS_BY_CRC = {spec.crc32: spec for spec in ROM_SPECS}
 
+BASE_SHINY_NUMERATOR = 65536
+BASE_THRESHOLD = 8
+MAX_NATIVE_THRESHOLD = 255
+
+
+@dataclass(frozen=True)
+class OddsPlan:
+    requested_odds: int
+    requested_mode: str
+    applied_mode: str
+    threshold: int
+    effective_bits: int
+    effective_one_in: float
+
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -172,6 +188,16 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Desired shiny rate as '1 in N'. Example: 4096 gives approximately 1/4096 "
             "(base game is 8192)."
+        ),
+    )
+    parser.add_argument(
+        "--mode",
+        choices=("auto", "native", "reroll"),
+        default="auto",
+        help=(
+            "Patch strategy: auto (default) picks native for 1/N >= 257 and reroll for "
+            "higher rates; native uses vanilla-style threshold compares only; reroll uses "
+            "bit-compressed shiny-value compares for higher odds."
         ),
     )
     parser.add_argument(
@@ -210,8 +236,180 @@ def threshold_from_one_in_n(denominator: int) -> int:
     if denominator <= 0:
         raise ValueError("--odds must be a positive integer.")
     # Base game is threshold 8 => 1/8192. We round to closest representable threshold.
-    threshold = round(65536 / denominator)
-    return max(1, min(255, threshold))
+    threshold = round(BASE_SHINY_NUMERATOR / denominator)
+    return max(1, min(MAX_NATIVE_THRESHOLD, threshold))
+
+
+def native_limit_one_in() -> float:
+    return BASE_SHINY_NUMERATOR / MAX_NATIVE_THRESHOLD
+
+
+def build_native_plan(odds: int) -> OddsPlan:
+    threshold = threshold_from_one_in_n(odds)
+    if round(BASE_SHINY_NUMERATOR / odds) > MAX_NATIVE_THRESHOLD:
+        limit = native_limit_one_in()
+        raise ValueError(
+            f"--mode native cannot represent 1/{odds}. "
+            f"Lowest native denominator is about 1/{limit:.2f}."
+        )
+    return OddsPlan(
+        requested_odds=odds,
+        requested_mode="native",
+        applied_mode="native",
+        threshold=threshold,
+        effective_bits=16,
+        effective_one_in=BASE_SHINY_NUMERATOR / threshold,
+    )
+
+
+def build_reroll_plan(odds: int) -> OddsPlan:
+    if odds <= 0:
+        raise ValueError("--odds must be a positive integer.")
+    target_p = 1.0 / odds
+    best: tuple[float, int, int] | None = None
+    for bits in range(1, 17):
+        max_threshold = min(MAX_NATIVE_THRESHOLD, (1 << bits))
+        ideal_threshold = target_p * (1 << bits)
+        seed = int(round(ideal_threshold))
+        for threshold in (seed - 1, seed, seed + 1):
+            if threshold < 1 or threshold > max_threshold:
+                continue
+            p = threshold / float(1 << bits)
+            error = abs(p - target_p)
+            candidate = (error, -bits, threshold)
+            if best is None or candidate < best:
+                best = candidate
+    if best is None:
+        raise ValueError("Could not build reroll plan for requested odds.")
+    _, neg_bits, threshold = best
+    bits = -neg_bits
+    return OddsPlan(
+        requested_odds=odds,
+        requested_mode="reroll",
+        applied_mode="reroll",
+        threshold=threshold,
+        effective_bits=bits,
+        effective_one_in=(1 << bits) / float(threshold),
+    )
+
+
+def build_odds_plan(odds: int, mode: str) -> OddsPlan:
+    if mode not in {"auto", "native", "reroll"}:
+        raise ValueError(f"Unsupported mode: {mode}")
+    if odds <= 0:
+        raise ValueError("--odds must be a positive integer.")
+    if mode == "native":
+        return build_native_plan(odds)
+    if mode == "reroll":
+        return build_reroll_plan(odds)
+    if round(BASE_SHINY_NUMERATOR / odds) <= MAX_NATIVE_THRESHOLD:
+        plan = build_native_plan(odds)
+        return OddsPlan(
+            requested_odds=odds,
+            requested_mode="auto",
+            applied_mode=plan.applied_mode,
+            threshold=plan.threshold,
+            effective_bits=plan.effective_bits,
+            effective_one_in=plan.effective_one_in,
+        )
+    plan = build_reroll_plan(odds)
+    return OddsPlan(
+        requested_odds=odds,
+        requested_mode="auto",
+        applied_mode=plan.applied_mode,
+        threshold=plan.threshold,
+        effective_bits=plan.effective_bits,
+        effective_one_in=plan.effective_one_in,
+    )
+
+
+def read_halfword(data: bytearray, offset: int) -> int:
+    return int.from_bytes(data[offset : offset + 2], "little")
+
+
+def write_halfword(data: bytearray, offset: int, value: int) -> None:
+    data[offset : offset + 2] = value.to_bytes(2, "little")
+
+
+def is_thumb_lsr_imm(instr: int) -> bool:
+    return (instr & 0xF800) == 0x0800
+
+
+def lsr_imm_amount(instr: int) -> int:
+    return (instr >> 6) & 0x1F
+
+
+def with_lsr_imm_amount(instr: int, amount: int) -> int:
+    return (instr & ~0x07C0) | ((amount & 0x1F) << 6)
+
+
+def is_thumb_ldr_literal(instr: int) -> bool:
+    return (instr & 0xF800) == 0x4800
+
+
+def literal_address_from_ldr(instr_offset: int, instr: int) -> int:
+    imm8 = instr & 0xFF
+    return ((instr_offset + 4) & ~0x3) + (imm8 * 4)
+
+
+def patch_reroll_context(
+    data: bytearray,
+    site_offset: int,
+    effective_bits: int,
+    seen_literals: set[int],
+) -> list[str]:
+    changes: list[str] = []
+    shift_amount = 32 - effective_bits
+    if shift_amount < 16 or shift_amount > 31:
+        raise ValueError(
+            f"Internal error: invalid shift amount {shift_amount} for reroll mode."
+        )
+
+    window_start = max(0, site_offset - 32)
+    lsr_sites: list[int] = []
+    for offset in range(window_start, site_offset, 2):
+        instr = read_halfword(data, offset)
+        if is_thumb_lsr_imm(instr) and lsr_imm_amount(instr) == 16:
+            lsr_sites.append(offset)
+    if len(lsr_sites) < 2:
+        raise ValueError(
+            f"Reroll mode validation failed near 0x{site_offset:06X}: "
+            "could not find two LSR #16 instructions."
+        )
+    for offset in lsr_sites[-2:]:
+        old_instr = read_halfword(data, offset)
+        new_instr = with_lsr_imm_amount(old_instr, shift_amount)
+        write_halfword(data, offset, new_instr)
+        changes.append(
+            f"0x{offset:06X}: LSR imm {lsr_imm_amount(old_instr)} -> "
+            f"{lsr_imm_amount(new_instr)} (reroll_bits)"
+        )
+
+    literal_patched = False
+    for offset in range(window_start, site_offset, 2):
+        instr = read_halfword(data, offset)
+        if not is_thumb_ldr_literal(instr):
+            continue
+        lit_addr = literal_address_from_ldr(offset, instr)
+        if lit_addr < 0 or lit_addr + 4 > len(data):
+            continue
+        if lit_addr in seen_literals:
+            literal_patched = True
+            continue
+        old_value = int.from_bytes(data[lit_addr : lit_addr + 4], "little")
+        if old_value == 0x0000FFFF:
+            data[lit_addr : lit_addr + 4] = (0).to_bytes(4, "little")
+            seen_literals.add(lit_addr)
+            literal_patched = True
+            changes.append(
+                f"0x{lit_addr:06X}: 0x0000FFFF -> 0x00000000 (reroll_mask_literal)"
+            )
+    if not literal_patched:
+        changes.append(
+            f"0x{site_offset:06X}: no local 0x0000FFFF literal found; "
+            "kept existing low-half mask path"
+        )
+    return changes
 
 
 def detect_site_format(data: bytearray, site: PatchSite) -> str:
@@ -233,12 +431,14 @@ def detect_site_format(data: bytearray, site: PatchSite) -> str:
     )
 
 
-def patch_data(data: bytearray, spec: RomSpec, threshold: int) -> list[str]:
-    if threshold < 1 or threshold > 255:
+def patch_data(data: bytearray, spec: RomSpec, plan: OddsPlan) -> list[str]:
+    threshold = plan.threshold
+    if threshold < 1 or threshold > MAX_NATIVE_THRESHOLD:
         raise ValueError("Internal error: threshold must be in range 1..255.")
 
     minus_one = max(0, threshold - 1)
     changes: list[str] = []
+    seen_literals: set[int] = set()
 
     for site in spec.patch_sites:
         new_value = threshold if site.kind == "odds" else minus_one
@@ -254,6 +454,16 @@ def patch_data(data: bytearray, spec: RomSpec, threshold: int) -> list[str]:
         changes.append(
             f"0x{site.offset:06X}: {old} -> {new_value} ({site.kind}, {fmt})"
         )
+
+        if plan.applied_mode == "reroll" and plan.effective_bits < 16 and site.kind == "odds_minus_one":
+            changes.extend(
+                patch_reroll_context(
+                    data=data,
+                    site_offset=site.offset,
+                    effective_bits=plan.effective_bits,
+                    seen_literals=seen_literals,
+                )
+            )
 
     return changes
 
@@ -330,6 +540,7 @@ def prompt_for_odds() -> int:
 def patch_rom(
     input_path: Path,
     odds: int,
+    mode: str,
     output_path: Path | None,
     overwrite_output: bool,
     auto_rename_output: bool = False,
@@ -348,7 +559,7 @@ def patch_rom(
         return 1
 
     try:
-        threshold = threshold_from_one_in_n(odds)
+        plan = build_odds_plan(odds, mode)
     except ValueError as exc:
         print(f"Error: {exc}")
         return 1
@@ -371,7 +582,7 @@ def patch_rom(
 
     data = bytearray(input_path.read_bytes())
     try:
-        changes = patch_data(data, spec, threshold)
+        changes = patch_data(data, spec, plan)
     except ValueError as exc:
         print(f"Error: {exc}")
         return 1
@@ -388,7 +599,11 @@ def patch_rom(
     print("")
     print("Patch summary:")
     print(f"  Requested odds: 1/{odds}")
-    print(f"  Applied threshold: {threshold} (base game is 8)")
+    print(f"  Requested mode: {mode}")
+    print(f"  Applied mode: {plan.applied_mode}")
+    print(f"  Applied threshold: {plan.threshold} (base game is {BASE_THRESHOLD})")
+    print(f"  Effective shiny bits: {plan.effective_bits}")
+    print(f"  Effective odds: ~1/{plan.effective_one_in:.3f}")
     print(f"  Output ROM: {output_path}")
     print(f"  Output CRC32: 0x{new_crc:08X}")
     print("")
@@ -456,6 +671,7 @@ def run_guided_mode(folder: Path) -> int:
     return patch_rom(
         input_path=selected_path,
         odds=odds,
+        mode="auto",
         output_path=final_out,
         overwrite_output=False,
         auto_rename_output=True,
@@ -478,6 +694,7 @@ def main() -> int:
     return patch_rom(
         input_path=args.input_rom,
         odds=args.odds,
+        mode=args.mode,
         output_path=args.output,
         overwrite_output=args.overwrite_output,
         auto_rename_output=False,
