@@ -6,19 +6,15 @@
 # Disclaimer
 This project is for educational and archival purposes.
 
-<<<<<<< HEAD
 # Gen 3 Shiny Odds CLI Patcher
-Safe shiny-odds patcher for Pokemon Gen 3 GBA ROMs:
+KiraPatch is a CLI utility for modifying shiny encounter rates in Generation 3 Pokemon ROMs.
+
+Supported games:
 - FireRed
 - LeafGreen
 - Ruby
 - Sapphire
 - Emerald
-=======
-## Gen 3 Shiny Odds CLI Patcher
-KiraPatch is a high-precision CLI utility for modifying Shiny encounter rates in Generation 3 Pokémon ROMs. 
-It uses CRC32 validation to ensure patches are only applied to clean, compatible revisions.
->>>>>>> 11807c7e1300dec3639ac63cc2343fcc7ca4f8e5
 
 Works with supported USA/EU clean revisions listed below.
 
@@ -28,13 +24,6 @@ Works with supported USA/EU clean revisions listed below.
 - Never overwrites the input ROM (always writes a new output file)
 
 If CRC32 is unknown, patching is refused.
-
-Safe shiny-odds patcher for Pokemon Gen 3 GBA ROMs:
-- FireRed
-- LeafGreen
-- Ruby
-- Sapphire
-- Emerald
 
 ## Usage
 ```bash
@@ -64,13 +53,13 @@ Default output naming:
 - `<input_stem>.shiny_1inN.gba`
 
 ## Mode behavior
-- `native`: uses vanilla-style threshold compares only.
-  - Maximum representable threshold is `255`, so best native rate is about `1/257`.
+- `native`: vanilla-style threshold compares only.
+  - Max representable threshold is `255`, so the best native rate is about `1/257`.
   - Requests above that rate (for example `1/256`, `1/16`) return an error.
-- `reroll`: uses the high-rate path that supports stronger shiny rates.
+- `reroll`: high-rate mode for stronger shiny rates.
 - `auto`: chooses `native` when possible, otherwise `reroll`.
 
-Patch summary now reports:
+Patch summary reports:
 - requested mode
 - applied mode
 - effective shiny bits
@@ -84,8 +73,8 @@ python shiny_patcher.py "Pokemon Emerald.gba" --odds 16 --mode reroll
 ```
 
 ## Drag-and-drop launcher (Windows)
-Use [patch_drag_drop.bat](patch_drag_drop.bat):
-- Drag one or more `.gba` ROM files onto `patch_drag_drop.bat`
+Use [KiraPatch.bat](KiraPatch.bat):
+- Drag one or more `.gba` ROM files onto `KiraPatch.bat`
 - The launcher reads settings from [patcher_config.ini](patcher_config.ini)
 - It calls `shiny_patcher.py` with `--odds` and `--mode`
 
@@ -100,8 +89,12 @@ Valid `mode` values:
 - `native`
 - `reroll`
 
-The launcher writes output names like:
+Output naming from launcher:
 - `<input_stem>.shiny_1inN_mode.gba`
+
+## Launcher icon
+Windows `.bat` files do not store custom icons directly.
+To use your logo icon, launch via [KiraPatch.lnk](KiraPatch.lnk), which points to `KiraPatch.bat` and uses [logo.ico](logo.ico).
 
 ## Supported ROM CRC32 values
 - `0xF0815EE7` - Pokemon Ruby Version (USA, Europe) Rev 0
@@ -120,26 +113,5 @@ python --version
 python shiny_patcher.py --help
 ```
 
-<<<<<<< HEAD
-=======
-## Drag-and-drop launcher (Windows)
-
-Use [patch_drag_drop.bat](patch_drag_drop.bat) for simple usage:
-- Drag one or more `.gba` ROM files onto `patch_drag_drop.bat`
-- The launcher reads odds from [patcher_config.ini](patcher_config.ini)
-- It calls `shiny_patcher.py` and creates patched ROM output files
-
-Edit this line in `patcher_config.ini` to change odds:
-```ini
-odds=4096
-```
-
-Example values:
-- `odds=8192` (vanilla)
-- `odds=4096`
-- `odds=2048`
----
-
->>>>>>> 11807c7e1300dec3639ac63cc2343fcc7ca4f8e5
 ## License
 Distributed under the MIT License. See `LICENSE` for more information.
