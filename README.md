@@ -11,15 +11,8 @@
 This project is for educational and archival purposes. 
 
 # Gen 3 Shiny Odds CLI Patcher
-It's a small script I made a while ago as practice.
-Works with European and USA versions only, haven't checked JP at all, feel free to fork and add it!
-
-Safe shiny-odds patcher for Pokemon Gen 3 GBA ROMs:
-- FireRed
-- LeafGreen
-- Ruby
-- Sapphire
-- Emerald
+KiraPatch is a high-precision CLI utility for modifying Shiny encounter rates in Generation 3 Pokémon ROMs. 
+It uses CRC32 validation to ensure patches are only applied to clean, compatible revisions.
 
 ## Safety model
 
@@ -28,6 +21,13 @@ Safe shiny-odds patcher for Pokemon Gen 3 GBA ROMs:
 - Never overwrites the input ROM (always writes a new output file)
 
 If CRC32 is unknown, patching is refused.
+
+Safe shiny-odds patcher for Pokemon Gen 3 GBA ROMs:
+- FireRed
+- LeafGreen
+- Ruby
+- Sapphire
+- Emerald
 
 ## Usage
 
@@ -93,7 +93,6 @@ python --version
 python shiny_patcher.py --help
 ```
 
-<<<<<<< HEAD
 ## Drag-and-drop launcher (Windows)
 
 Use [patch_drag_drop.bat](patch_drag_drop.bat) for simple usage:
@@ -110,7 +109,6 @@ Example values:
 - `odds=8192` (vanilla)
 - `odds=4096`
 - `odds=2048`
-=======
 ---
 
 ## License
