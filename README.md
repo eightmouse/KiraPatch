@@ -43,7 +43,7 @@ python shiny_patcher.py
 ### Arguments
 - `input_rom`: source `.gba` ROM path
 - `--odds N`: desired shiny rate as `1 in N` (required)
-- `--mode {auto,native,reroll}`: patch strategy (default: `auto`)
+- `--mode {auto,canonical,reroll,native,legacy}`: patch strategy (default: `auto`)
 - `--output PATH`: optional output ROM path
 - `--overwrite-output`: allow replacing an existing output file
 - `--guided`: interactive wizard, scans a folder for ROMs and guides patching
@@ -53,27 +53,32 @@ Default output naming:
 - `<input_stem>.shiny_1inN.gba`
 
 ## Mode behavior
-- `native`: vanilla-style threshold compares only.
-  - Max representable threshold is `255`, so the best native rate is about `1/257`.
+- `auto`: recommended. Uses canonical PID rerolls for boosted shiny odds.
+- `canonical`: canonical PID rerolls (same behavior as `auto`).
+- `reroll`: alias of `canonical` for backwards compatibility.
+- `native`: old threshold patch mode.
+  - Max representable threshold is `255`, so best native rate is about `1/257`.
   - Requests above that rate (for example `1/256`, `1/16`) return an error.
-- `reroll`: high-rate mode for stronger shiny rates by modifying the in-game shiny check.
-- `auto`: chooses `native` when possible, otherwise `reroll`.
+- `legacy`: alias of `native`.
 
-PKHeX compatibility note:
-- Only vanilla shiny logic (`1/8192`, effective threshold `8`, 16-bit check) is fully PKHeX-canonical.
-- Any boosted odds mode can show in-game shiny Pokemon that PKHeX will not mark as shiny.
+Canonical reroll behavior:
+- Patches the Gen 3 PID generation routine (not visual-only shiny checks).
+- Uses the game's own `SetMonData` write path to avoid checksum corruption / Bad Eggs.
+- Resulting shinies are canonical and PKHeX-valid when shiny in-game.
+- Effective odds are approximate to the nearest reroll-attempt count.
 
 Patch summary reports:
 - requested mode
 - applied mode
 - effective shiny bits
 - effective odds
+- canonical reroll attempts (when canonical mode is applied)
 
 ## Examples
 ```bash
 python shiny_patcher.py "Pokemon FireRed.gba" --odds 2048 --mode auto
 python shiny_patcher.py "Pokemon FireRed.gba" --odds 256 --mode auto
-python shiny_patcher.py "Pokemon Emerald.gba" --odds 16 --mode reroll
+python shiny_patcher.py "Pokemon Emerald.gba" --odds 16 --mode canonical
 ```
 
 ## Drag-and-drop launcher (Windows)
@@ -90,8 +95,10 @@ mode=auto
 
 Valid `mode` values:
 - `auto`
-- `native`
+- `canonical`
 - `reroll`
+- `native`
+- `legacy`
 
 Output naming from launcher:
 - `<input_stem>.shiny_1inN_mode.gba`

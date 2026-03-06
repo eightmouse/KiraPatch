@@ -17,7 +17,7 @@ if not exist "%CONFIG_FILE%" (
   >"%CONFIG_FILE%" (
     echo ; Gen 3 Shiny Odds Patcher config
     echo ; Set shiny odds as 1 in N ^(integer ^> 0^)
-    echo ; Set mode as one of: auto, native, reroll
+    echo ; Set mode as one of: auto, canonical, reroll, native, legacy
     echo odds=256
     echo mode=auto
   )
@@ -106,12 +106,14 @@ if errorlevel 1 (
 )
 
 if /I "!MODE!"=="auto" set "MODE=auto"
-if /I "!MODE!"=="native" set "MODE=native"
+if /I "!MODE!"=="canonical" set "MODE=canonical"
 if /I "!MODE!"=="reroll" set "MODE=reroll"
+if /I "!MODE!"=="native" set "MODE=native"
+if /I "!MODE!"=="legacy" set "MODE=legacy"
 
-if /I not "!MODE!"=="auto" if /I not "!MODE!"=="native" if /I not "!MODE!"=="reroll" (
+if /I not "!MODE!"=="auto" if /I not "!MODE!"=="canonical" if /I not "!MODE!"=="reroll" if /I not "!MODE!"=="native" if /I not "!MODE!"=="legacy" (
   echo [ERROR] Invalid mode in "%CONFIG_FILE%": !MODE!
-  echo Use mode=auto, mode=native, or mode=reroll
+  echo Use mode=auto, mode=canonical, mode=reroll, mode=native, or mode=legacy
   exit /b 1
 )
 

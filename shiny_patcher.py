@@ -2,6 +2,7 @@
 from __future__ import annotations
 import argparse
 import binascii
+import math
 from dataclasses import dataclass
 
 from pathlib import Path
@@ -165,6 +166,8 @@ class OddsPlan:
     threshold: int
     effective_bits: int
     effective_one_in: float
+    bonus_threshold8: int = 0
+    reroll_attempts: int = 1
 
 
 
@@ -192,12 +195,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--mode",
-        choices=("auto", "native", "reroll"),
+        choices=("auto", "canonical", "legacy", "native", "reroll"),
         default="auto",
         help=(
-            "Patch strategy: auto (default) picks native for 1/N >= 257 and reroll for "
-            "higher rates; native uses vanilla-style threshold compares only; reroll uses "
-            "bit-compressed shiny-value compares for higher odds."
+            "Patch strategy: auto/canonical/reroll uses canonical PID rerolls (PKHeX-valid shinies). "
+            "legacy/native keep the older visual-check threshold patch behavior."
         ),
     )
     parser.add_argument(
@@ -293,34 +295,60 @@ def build_reroll_plan(odds: int) -> OddsPlan:
     )
 
 
-def build_odds_plan(odds: int, mode: str) -> OddsPlan:
-    if mode not in {"auto", "native", "reroll"}:
-        raise ValueError(f"Unsupported mode: {mode}")
+def build_canonical_plan(odds: int, requested_mode: str) -> OddsPlan:
     if odds <= 0:
         raise ValueError("--odds must be a positive integer.")
-    if mode == "native":
-        return build_native_plan(odds)
-    if mode == "reroll":
-        return build_reroll_plan(odds)
-    if round(BASE_SHINY_NUMERATOR / odds) <= MAX_NATIVE_THRESHOLD:
-        plan = build_native_plan(odds)
-        return OddsPlan(
-            requested_odds=odds,
-            requested_mode="auto",
-            applied_mode=plan.applied_mode,
-            threshold=plan.threshold,
-            effective_bits=plan.effective_bits,
-            effective_one_in=plan.effective_one_in,
+    if odds > 8192:
+        raise ValueError(
+            "Canonical reroll mode supports odds from 1/1 up to 1/8192 only."
         )
-    plan = build_reroll_plan(odds)
+
+    base_p = 1.0 / 8192.0
+    target_p = 1.0 / float(odds)
+    if target_p < base_p:
+        raise ValueError(
+            "Canonical mode cannot make odds rarer than base 1/8192."
+        )
+
+    if target_p >= 1.0:
+        attempts = 65536
+    else:
+        raw_attempts = math.log1p(-target_p) / math.log1p(-base_p)
+        low = max(1, min(65536, int(math.floor(raw_attempts))))
+        high = max(1, min(65536, int(math.ceil(raw_attempts))))
+        if low == high:
+            attempts = low
+        else:
+            low_p = 1.0 - ((1.0 - base_p) ** low)
+            high_p = 1.0 - ((1.0 - base_p) ** high)
+            attempts = low if abs(low_p - target_p) <= abs(high_p - target_p) else high
+
+    effective_p = 1.0 - ((1.0 - base_p) ** attempts)
+    effective_one_in = (1.0 / effective_p) if effective_p > 0 else float("inf")
+
     return OddsPlan(
         requested_odds=odds,
-        requested_mode="auto",
-        applied_mode=plan.applied_mode,
-        threshold=plan.threshold,
-        effective_bits=plan.effective_bits,
-        effective_one_in=plan.effective_one_in,
+        requested_mode=requested_mode,
+        applied_mode="canonical",
+        threshold=BASE_THRESHOLD,
+        effective_bits=16,
+        effective_one_in=effective_one_in,
+        bonus_threshold8=0,
+        reroll_attempts=attempts,
     )
+
+
+def build_odds_plan(odds: int, mode: str) -> OddsPlan:
+    if mode not in {"auto", "canonical", "legacy", "native", "reroll"}:
+        raise ValueError(f"Unsupported mode: {mode}")
+    if mode in {"auto", "canonical", "reroll"}:
+        return build_canonical_plan(odds, mode)
+    legacy_mode = "native" if mode == "legacy" else mode
+    if odds <= 0:
+        raise ValueError("--odds must be a positive integer.")
+    if legacy_mode == "native":
+        return build_native_plan(odds)
+    raise ValueError(f"Unsupported legacy mode: {mode}")
 
 
 def read_halfword(data: bytearray, offset: int) -> int:
@@ -412,6 +440,270 @@ def patch_reroll_context(
     return changes
 
 
+def decode_thumb_bl_target(data: bytearray, offset: int) -> int:
+    if offset < 0 or offset + 4 > len(data):
+        raise ValueError(f"BL decode offset out of range: 0x{offset:06X}")
+    hw1 = int.from_bytes(data[offset : offset + 2], "little")
+    hw2 = int.from_bytes(data[offset + 2 : offset + 4], "little")
+    if (hw1 & 0xF800) != 0xF000 or (hw2 & 0xD000) != 0xD000:
+        raise ValueError(f"Expected BL at 0x{offset:06X}, found 0x{hw1:04X} 0x{hw2:04X}.")
+
+    s = (hw1 >> 10) & 1
+    imm10 = hw1 & 0x03FF
+    j1 = (hw2 >> 13) & 1
+    j2 = (hw2 >> 11) & 1
+    imm11 = hw2 & 0x07FF
+    i1 = (~(j1 ^ s)) & 1
+    i2 = (~(j2 ^ s)) & 1
+    imm25 = (s << 24) | (i1 << 23) | (i2 << 22) | (imm10 << 12) | (imm11 << 1)
+    if s:
+        imm25 |= ~((1 << 25) - 1)
+    return (offset + 4 + imm25) & 0xFFFFFFFF
+
+
+def encode_thumb_bl(from_addr: int, target_addr: int) -> bytes:
+    delta = target_addr - (from_addr + 4)
+    if delta % 2 != 0:
+        raise ValueError(
+            f"BL target alignment error: 0x{from_addr:06X} -> 0x{target_addr:06X}"
+        )
+    if delta < -(1 << 24) or delta > ((1 << 24) - 2):
+        raise ValueError(
+            f"BL out of range: 0x{from_addr:06X} -> 0x{target_addr:06X}"
+        )
+
+    imm25 = delta & ((1 << 25) - 1)
+    s = (imm25 >> 24) & 1
+    i1 = (imm25 >> 23) & 1
+    i2 = (imm25 >> 22) & 1
+    imm10 = (imm25 >> 12) & 0x03FF
+    imm11 = (imm25 >> 1) & 0x07FF
+    j1 = (~i1 ^ s) & 1
+    j2 = (~i2 ^ s) & 1
+
+    hw1 = 0xF000 | (s << 10) | imm10
+    hw2 = 0xD000 | (j1 << 13) | (j2 << 11) | imm11
+    return hw1.to_bytes(2, "little") + hw2.to_bytes(2, "little")
+
+
+def canonical_cmp_site(spec: RomSpec) -> PatchSite:
+    candidates = [s for s in spec.patch_sites if s.kind == "odds_minus_one" and s.default_value == 0x07]
+    if not candidates:
+        raise ValueError("Canonical patch site not found for this ROM.")
+    return min(candidates, key=lambda s: s.offset)
+
+
+def encode_thumb_b_cond(from_addr: int, target_addr: int, cond_code: int) -> bytes:
+    delta = target_addr - (from_addr + 4)
+    if delta % 2 != 0:
+        raise ValueError(
+            f"Conditional branch alignment error: 0x{from_addr:06X} -> 0x{target_addr:06X}"
+        )
+    if delta < -256 or delta > 254:
+        raise ValueError(
+            f"Conditional branch out of range: 0x{from_addr:06X} -> 0x{target_addr:06X}"
+        )
+    imm8 = (delta >> 1) & 0xFF
+    hw = 0xD000 | ((cond_code & 0xF) << 8) | imm8
+    return hw.to_bytes(2, "little")
+
+
+def encode_thumb_b(from_addr: int, target_addr: int) -> bytes:
+    delta = target_addr - (from_addr + 4)
+    if delta % 2 != 0:
+        raise ValueError(
+            f"Branch alignment error: 0x{from_addr:06X} -> 0x{target_addr:06X}"
+        )
+    if delta < -2048 or delta > 2046:
+        raise ValueError(
+            f"Branch out of range: 0x{from_addr:06X} -> 0x{target_addr:06X}"
+        )
+    imm11 = (delta >> 1) & 0x7FF
+    hw = 0xE000 | imm11
+    return hw.to_bytes(2, "little")
+
+
+def build_canonical_reroll_hook(
+    cave_offset: int,
+    rng_target: int,
+    rerolls_remaining: int,
+    orig_hw0: int,
+    orig_hw1: int,
+) -> bytes:
+    hook = bytearray()
+    labels: dict[str, int] = {}
+    fixups: list[tuple[str, int, str, int]] = []
+
+    def cur_addr() -> int:
+        return cave_offset + len(hook)
+
+    def emit_hw(value: int) -> None:
+        hook.extend((value & 0xFFFF).to_bytes(2, "little"))
+
+    def mark(name: str) -> None:
+        labels[name] = cur_addr()
+
+    def emit_ldr_literal(rd: int, label: str) -> None:
+        pos = cur_addr()
+        emit_hw(0x4800 | ((rd & 0x7) << 8))
+        fixups.append(("ldr", pos, label, rd))
+
+    def emit_b_cond(cond_code: int, label: str) -> None:
+        pos = cur_addr()
+        emit_hw(0xD000 | ((cond_code & 0xF) << 8))
+        fixups.append(("bcond", pos, label, cond_code))
+
+    def emit_b(label: str) -> None:
+        pos = cur_addr()
+        emit_hw(0xE000)
+        fixups.append(("b", pos, label, 0))
+
+    emit_hw(0xB5F0)  # push {r4-r7,lr}
+    emit_hw(0x0016)  # mov r6,r2
+    emit_hw(0x6835)  # ldr r5,[r6]
+    emit_ldr_literal(4, "rerolls_lit")
+
+    mark("check")
+    emit_hw(0x4648)  # mov r0,r9
+    emit_hw(0x6803)  # ldr r3,[r0]
+    emit_hw(0x0C29)  # lsr r1,r5,#16
+    emit_hw(0x4069)  # eor r1,r5
+    emit_hw(0x0C18)  # lsr r0,r3,#16
+    emit_hw(0x4058)  # eor r0,r3
+    emit_hw(0x4041)  # eor r1,r0
+    emit_hw(0x0409)  # lsl r1,r1,#16
+    emit_hw(0x0C09)  # lsr r1,r1,#16
+    emit_hw(0x2907)  # cmp r1,#7
+    emit_b_cond(9, "done")  # bls done
+    emit_hw(0x2C00)  # cmp r4,#0
+    emit_b_cond(0, "done")  # beq done
+    emit_hw(0x3C01)  # subs r4,#1
+    hook.extend(encode_thumb_bl(cur_addr(), rng_target))
+    emit_hw(0x0405)  # lsl r5,r0,#16
+    hook.extend(encode_thumb_bl(cur_addr(), rng_target))
+    emit_hw(0x0400)  # lsl r0,r0,#16
+    emit_hw(0x0C00)  # lsr r0,r0,#16
+    emit_hw(0x4305)  # orr r5,r0
+    emit_b("check")
+
+    mark("done")
+    emit_hw(0x6035)  # str r5,[r6]
+    emit_hw(0x0032)  # mov r2,r6
+    emit_hw(orig_hw0)
+    emit_hw(orig_hw1)
+    emit_hw(0xBDF0)  # pop {r4-r7,pc}
+
+    while len(hook) % 4 != 0:
+        emit_hw(0x46C0)  # nop
+
+    mark("rerolls_lit")
+    hook.extend((rerolls_remaining & 0xFFFFFFFF).to_bytes(4, "little"))
+
+    for kind, pos, label, extra in fixups:
+        if label not in labels:
+            raise ValueError(f"Internal hook fixup error: missing label {label}")
+        target = labels[label]
+        idx = pos - cave_offset
+        if kind == "ldr":
+            pc_aligned = (pos + 4) & ~0x3
+            delta = target - pc_aligned
+            if delta < 0 or delta % 4 != 0 or delta > 1020:
+                raise ValueError(
+                    f"Literal load out of range at 0x{pos:06X} -> 0x{target:06X}"
+                )
+            imm8 = delta // 4
+            hw = 0x4800 | ((extra & 0x7) << 8) | imm8
+            hook[idx : idx + 2] = hw.to_bytes(2, "little")
+        elif kind == "bcond":
+            hook[idx : idx + 2] = encode_thumb_b_cond(pos, target, extra)
+        elif kind == "b":
+            hook[idx : idx + 2] = encode_thumb_b(pos, target)
+        else:
+            raise ValueError(f"Internal hook fixup kind error: {kind}")
+
+    return bytes(hook)
+
+
+def patch_data_canonical(data: bytearray, spec: RomSpec, plan: OddsPlan) -> list[str]:
+    cmp_site = canonical_cmp_site(spec)
+    cmp_offset = cmp_site.offset
+    hook_callsite = cmp_offset - 0x48
+    field0_call = hook_callsite + 4
+    field1_call = cmp_offset + 0x3A
+    rng_call_1 = cmp_offset - 0x2E
+    rng_call_2 = cmp_offset - 0x28
+    cave_offset = 0x00F00000
+
+    if hook_callsite - 2 < 0 or field0_call + 4 > len(data):
+        raise ValueError("ROM layout too small for canonical reroll hook patch.")
+
+    if cave_offset + 0x100 > len(data):
+        raise ValueError("ROM layout too small for canonical reroll code cave.")
+
+    cmp_hw = read_halfword(data, cmp_offset)
+    if (cmp_hw & 0xFF00) != 0x2900:
+        raise ValueError(
+            f"Canonical reroll validation failed at 0x{cmp_offset:06X}: "
+            f"expected cmp Rx,#imm (0x29xx), found 0x{cmp_hw:04X}."
+        )
+
+    pre_hw = read_halfword(data, hook_callsite - 2)
+    if (pre_hw & 0xFF00) != 0xAA00:
+        raise ValueError(
+            f"Canonical reroll validation failed at 0x{hook_callsite - 2:06X}: "
+            f"expected add r2,sp,#imm (0xAAxx), found 0x{pre_hw:04X}."
+        )
+
+    orig_hw0 = read_halfword(data, hook_callsite)
+    orig_hw1 = read_halfword(data, hook_callsite + 2)
+    if orig_hw1 != 0x2100:
+        raise ValueError(
+            f"Canonical reroll validation failed at 0x{hook_callsite + 2:06X}: "
+            f"expected movs r1,#0 (0x2100), found 0x{orig_hw1:04X}."
+        )
+
+    set_data_target_0 = decode_thumb_bl_target(data, field0_call)
+    set_data_target_1 = decode_thumb_bl_target(data, field1_call)
+    if set_data_target_0 != set_data_target_1:
+        raise ValueError(
+            f"Canonical reroll validation failed: SetMonData BL targets differ "
+            f"(0x{set_data_target_0:06X} vs 0x{set_data_target_1:06X})."
+        )
+
+    rng_target_1 = decode_thumb_bl_target(data, rng_call_1)
+    rng_target_2 = decode_thumb_bl_target(data, rng_call_2)
+    if rng_target_1 != rng_target_2:
+        raise ValueError(
+            f"Canonical reroll validation failed: RNG BL targets differ "
+            f"(0x{rng_target_1:06X} vs 0x{rng_target_2:06X})."
+        )
+
+    cave = data[cave_offset : cave_offset + 0x100]
+    if any(b not in (0x00, 0xFF) for b in cave):
+        raise ValueError(
+            f"Code cave at 0x{cave_offset:06X} is not blank (not 0x00/0xFF)."
+        )
+
+    rerolls_remaining = max(0, plan.reroll_attempts - 1)
+    hook = build_canonical_reroll_hook(
+        cave_offset=cave_offset,
+        rng_target=rng_target_1,
+        rerolls_remaining=rerolls_remaining,
+        orig_hw0=orig_hw0,
+        orig_hw1=orig_hw1,
+    )
+
+    data[cave_offset : cave_offset + len(hook)] = hook
+    data[hook_callsite : hook_callsite + 4] = encode_thumb_bl(hook_callsite, cave_offset)
+
+    changes = [
+        f"0x{hook_callsite:06X}: replaced personality SetMonData args with BL 0x{cave_offset:06X} (canonical reroll hook)",
+        f"0x{cave_offset:06X}: wrote {len(hook)}-byte canonical reroll hook "
+        f"(reroll_attempts={plan.reroll_attempts}, rng=0x{rng_target_1:06X}, set_data=0x{set_data_target_0:06X})",
+    ]
+    return changes
+
+
 def detect_site_format(data: bytearray, site: PatchSite) -> str:
     if site.offset >= len(data):
         raise ValueError(f"Offset 0x{site.offset:06X} is outside ROM size.")
@@ -431,7 +723,7 @@ def detect_site_format(data: bytearray, site: PatchSite) -> str:
     )
 
 
-def patch_data(data: bytearray, spec: RomSpec, plan: OddsPlan) -> list[str]:
+def patch_data_legacy(data: bytearray, spec: RomSpec, plan: OddsPlan) -> list[str]:
     threshold = plan.threshold
     if threshold < 1 or threshold > MAX_NATIVE_THRESHOLD:
         raise ValueError("Internal error: threshold must be in range 1..255.")
@@ -466,6 +758,12 @@ def patch_data(data: bytearray, spec: RomSpec, plan: OddsPlan) -> list[str]:
             )
 
     return changes
+
+
+def patch_data(data: bytearray, spec: RomSpec, plan: OddsPlan) -> list[str]:
+    if plan.applied_mode == "canonical":
+        return patch_data_canonical(data, spec, plan)
+    return patch_data_legacy(data, spec, plan)
 
 
 def default_output_path(input_path: Path, odds_denominator: int) -> Path:
@@ -604,7 +902,10 @@ def patch_rom(
     print(f"  Applied threshold: {plan.threshold} (base game is {BASE_THRESHOLD})")
     print(f"  Effective shiny bits: {plan.effective_bits}")
     print(f"  Effective odds: ~1/{plan.effective_one_in:.3f}")
-    if not (plan.effective_bits == 16 and plan.threshold == BASE_THRESHOLD):
+    if plan.applied_mode == "canonical":
+        print(f"  Canonical reroll attempts: {plan.reroll_attempts} total PID roll(s)")
+        print("  Compatibility: PKHeX-canonical shiny logic preserved.")
+    elif not (plan.effective_bits == 16 and plan.threshold == BASE_THRESHOLD):
         print("  Compatibility: non-vanilla shiny logic; PKHeX will only flag PID-valid shinies.")
     print(f"  Output ROM: {output_path}")
     print(f"  Output CRC32: 0x{new_crc:08X}")
@@ -705,3 +1006,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
