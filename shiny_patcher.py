@@ -156,6 +156,7 @@ ROM_SPECS_BY_CRC = {spec.crc32: spec for spec in ROM_SPECS}
 BASE_SHINY_NUMERATOR = 65536
 BASE_THRESHOLD = 8
 MAX_NATIVE_THRESHOLD = 255
+MAX_CANONICAL_REROLL_ATTEMPTS = 1024
 
 
 @dataclass(frozen=True)
@@ -168,6 +169,7 @@ class OddsPlan:
     effective_one_in: float
     bonus_threshold8: int = 0
     reroll_attempts: int = 1
+    reroll_capped: bool = False
 
 
 
@@ -311,17 +313,20 @@ def build_canonical_plan(odds: int, requested_mode: str) -> OddsPlan:
         )
 
     if target_p >= 1.0:
-        attempts = 65536
+        uncapped_attempts = BASE_SHINY_NUMERATOR
     else:
         raw_attempts = math.log1p(-target_p) / math.log1p(-base_p)
-        low = max(1, min(65536, int(math.floor(raw_attempts))))
-        high = max(1, min(65536, int(math.ceil(raw_attempts))))
+        low = max(1, min(BASE_SHINY_NUMERATOR, int(math.floor(raw_attempts))))
+        high = max(1, min(BASE_SHINY_NUMERATOR, int(math.ceil(raw_attempts))))
         if low == high:
-            attempts = low
+            uncapped_attempts = low
         else:
             low_p = 1.0 - ((1.0 - base_p) ** low)
             high_p = 1.0 - ((1.0 - base_p) ** high)
-            attempts = low if abs(low_p - target_p) <= abs(high_p - target_p) else high
+            uncapped_attempts = low if abs(low_p - target_p) <= abs(high_p - target_p) else high
+
+    attempts = min(uncapped_attempts, MAX_CANONICAL_REROLL_ATTEMPTS)
+    reroll_capped = attempts != uncapped_attempts
 
     effective_p = 1.0 - ((1.0 - base_p) ** attempts)
     effective_one_in = (1.0 / effective_p) if effective_p > 0 else float("inf")
@@ -335,6 +340,7 @@ def build_canonical_plan(odds: int, requested_mode: str) -> OddsPlan:
         effective_one_in=effective_one_in,
         bonus_threshold8=0,
         reroll_attempts=attempts,
+        reroll_capped=reroll_capped,
     )
 
 
@@ -484,6 +490,13 @@ def encode_thumb_bl(from_addr: int, target_addr: int) -> bytes:
     hw1 = 0xF000 | (s << 10) | imm10
     hw2 = 0xD000 | (j1 << 13) | (j2 << 11) | imm11
     return hw1.to_bytes(2, "little") + hw2.to_bytes(2, "little")
+
+
+def is_thumb_add_imm0_into_r0(instr: int) -> bool:
+    op = (instr >> 11) & 0x1F
+    imm3 = (instr >> 6) & 0x07
+    rd = instr & 0x07
+    return op == 0x03 and imm3 == 0 and rd == 0
 
 
 def canonical_cmp_site(spec: RomSpec) -> PatchSite:
@@ -656,6 +669,11 @@ def patch_data_canonical(data: bytearray, spec: RomSpec, plan: OddsPlan) -> list
 
     orig_hw0 = read_halfword(data, hook_callsite)
     orig_hw1 = read_halfword(data, hook_callsite + 2)
+    if not is_thumb_add_imm0_into_r0(orig_hw0):
+        raise ValueError(
+            f"Canonical reroll validation failed at 0x{hook_callsite:06X}: "
+            f"expected add r0,Rx,#0 call-setup opcode, found 0x{orig_hw0:04X}."
+        )
     if orig_hw1 != 0x2100:
         raise ValueError(
             f"Canonical reroll validation failed at 0x{hook_callsite + 2:06X}: "
@@ -904,6 +922,17 @@ def patch_rom(
     print(f"  Effective odds: ~1/{plan.effective_one_in:.3f}")
     if plan.applied_mode == "canonical":
         print(f"  Canonical reroll attempts: {plan.reroll_attempts} total PID roll(s)")
+        if plan.reroll_capped:
+            if plan.requested_odds == 1:
+                print(
+                    "  Warning: requested 1/1 is capped in canonical mode to avoid severe lag; "
+                    f"using {MAX_CANONICAL_REROLL_ATTEMPTS} rolls."
+                )
+            else:
+                print(
+                    "  Warning: requested odds required too many PID rerolls; "
+                    f"capped at {MAX_CANONICAL_REROLL_ATTEMPTS} rolls for stability."
+                )
         print("  Compatibility: PKHeX-canonical shiny logic preserved.")
     elif not (plan.effective_bits == 16 and plan.threshold == BASE_THRESHOLD):
         print("  Compatibility: non-vanilla shiny logic; PKHeX will only flag PID-valid shinies.")

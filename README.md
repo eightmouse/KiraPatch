@@ -55,6 +55,7 @@ Default output naming:
 ## Mode behavior
 - `auto`: recommended. Uses canonical PID rerolls for boosted shiny odds.
 - `canonical`: canonical PID rerolls (same behavior as `auto`).
+  - Extremely high requests (for example `1/1`) are capped for stability and will print a warning.
 - `reroll`: alias of `canonical` for backwards compatibility.
 - `native`: old threshold patch mode.
   - Max representable threshold is `255`, so best native rate is about `1/257`.
@@ -66,6 +67,7 @@ Canonical reroll behavior:
 - Uses the game's own `SetMonData` write path to avoid checksum corruption / Bad Eggs.
 - Resulting shinies are canonical and PKHeX-valid when shiny in-game.
 - Effective odds are approximate to the nearest reroll-attempt count.
+- Rerolls are capped at `1024` per generated Pokemon to avoid severe in-game lag.
 
 Patch summary reports:
 - requested mode
