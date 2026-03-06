@@ -185,6 +185,7 @@ MAX_NATIVE_THRESHOLD = 255
 MAX_CANONICAL_REROLL_ATTEMPTS = 1024
 THUMB_BL_MIN_DELTA = -0x400000
 THUMB_BL_MAX_DELTA = 0x3FFFFE
+ROM_EXEC_BASE = 0x08000000
 
 
 @dataclass(frozen=True)
@@ -718,7 +719,7 @@ def build_canonical_create_mon_hook(
         emit_hw(0x46C0)  # nop
 
     mark("retry_addr")
-    hook.extend(((retry_target | 1) & 0xFFFFFFFF).to_bytes(4, "little"))
+    hook.extend((((ROM_EXEC_BASE + retry_target) | 1) & 0xFFFFFFFF).to_bytes(4, "little"))
     mark("counter_init")
     counter_value = 0x80000000 | (max(0, rerolls_remaining) & 0x7FFFFFFF)
     hook.extend(counter_value.to_bytes(4, "little"))
@@ -1109,6 +1110,7 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
 
 
 
