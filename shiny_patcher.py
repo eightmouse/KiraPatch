@@ -596,13 +596,20 @@ def find_canonical_create_mon_layout(data: bytearray, cmp_offset: int) -> tuple[
         )
 
     # Expected CreateMon sequence around callsite:
-    #   ... mov r0,r8 ; adds r1,r6,#0 ; add r2,sp,#0x10 ; ldrb r2,[r2] ; ldr r3,[sp,#0x18] ; bl CreateBoxMon
+    #   ... str r4,[sp,#0] ; str r7,[sp,#4] ; str r5,[sp,#8] ; ldr r0,[sp,#0x40] ; str r0,[sp,#0x0c]
+    #   mov r0,r8 ; adds r1,r6,#0 ; add r2,sp,#0x10 ; ldrb r2,[r2] ; ldr r3,[sp,#0x18] ; bl CreateBoxMon
     #   mov r0,r8 ; movs r1,#0x38 ; add r2,sp,#0x10 ; bl SetMonData
     pre_sig = (0x4640, 0x1C31, 0xAA04, 0x7812, 0x9B06)
     if not _match_halfwords(data, create_box_call - 0x0A, pre_sig):
         raise ValueError(
             f"Canonical reroll validation failed at 0x{create_box_call - 0x0A:06X}: "
             "unexpected CreateMon argument setup sequence."
+        )
+    arg_reload_sig = (0x9400, 0x9701, 0x9502, 0x9810, 0x9003)
+    if not _match_halfwords(data, create_box_call - 0x14, arg_reload_sig):
+        raise ValueError(
+            f"Canonical reroll validation failed at 0x{create_box_call - 0x14:06X}: "
+            "unexpected CreateMon stack-argument reload sequence."
         )
 
     hook_callsite = create_box_call + 4
@@ -616,8 +623,8 @@ def find_canonical_create_mon_layout(data: bytearray, cmp_offset: int) -> tuple[
             "unexpected post-CreateBoxMon sequence."
         )
 
-    # Retry from the pre-call argument-setup block; it reloads r2/r3 from stack each loop.
-    retry_target = create_box_call - 0x0A
+    # Retry from the full stack-argument reload block so all CreateBoxMon args are rebuilt each loop.
+    retry_target = create_box_call - 0x14
 
     return hook_callsite, retry_target
 def canonical_cmp_site(spec: RomSpec) -> PatchSite:
@@ -1118,8 +1125,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-
-
-
 
