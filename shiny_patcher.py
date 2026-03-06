@@ -616,20 +616,8 @@ def find_canonical_create_mon_layout(data: bytearray, cmp_offset: int) -> tuple[
             "unexpected post-CreateBoxMon sequence."
         )
 
-    # Retry from the fuller pre-call block so each reroll repeats the same setup path.
-    retry_target = create_box_call - 0x1C
-    if not _match_halfwords(data, retry_target, (0x4640, 0x9306)):
-        raise ValueError(
-            f"Canonical reroll validation failed at 0x{retry_target:06X}: "
-            "unexpected CreateMon retry-entry sequence."
-        )
-    try:
-        decode_thumb_bl_target(data, retry_target + 4)
-    except ValueError as exc:
-        raise ValueError(
-            f"Canonical reroll validation failed at 0x{retry_target + 4:06X}: "
-            "expected BL in CreateMon retry-entry sequence."
-        ) from exc
+    # Retry from the pre-call argument-setup block; it reloads r2/r3 from stack each loop.
+    retry_target = create_box_call - 0x0A
 
     return hook_callsite, retry_target
 def canonical_cmp_site(spec: RomSpec) -> PatchSite:
@@ -1130,6 +1118,7 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
 
 
 
