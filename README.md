@@ -72,12 +72,21 @@ Do not use:
 
 ## How Do I Patch The .rom?
 ### Standalone Windows EXE
-Run `dist/KiraPatch.exe` after building it with `build_standalone.bat`.
+Build and run `dist/KiraPatch.exe` with `build_standalone.bat`, or use a prebuilt EXE if you have one.
 
-The EXE opens a simple GUI where you can:
-- add one or more `.gba` ROMs
-- choose the odds you want
-- patch them in `auto` mode
+The EXE is now the main user-facing launcher. It opens a compact GUI where you can:
+- drag and drop one or more `.gba` ROMs into the window
+- add ROMs manually with the file picker
+- choose the shiny odds you want
+- patch in `auto` mode
+
+Recommended settings:
+- `odds=128` or `odds=256` for smoother gameplay
+- `odds=16` if you want aggressive testing and do not mind freezes or pauses
+
+Output naming from the EXE:
+- `<input_stem>.shiny_1inN.gba`
+- if that already exists, KiraPatch adds a version suffix automatically
 
 ### CLI
 ```bash
@@ -93,26 +102,6 @@ If no ROM path is provided, guided mode starts automatically:
 ```bash
 python shiny_patcher.py
 ```
-
-### Windows drag-and-drop
-Use [KiraPatch.bat](KiraPatch.bat).
-
-You can drag one or more `.gba` files onto it. The launcher reads settings from [patcher_config.ini](patcher_config.ini).
-
-Example config:
-```ini
-odds=256
-mode=auto
-```
-
-Recommended settings:
-- `mode=auto`
-- `odds=128` or `odds=256` for smoother gameplay
-- `odds=16` if you want very aggressive testing and do not mind pauses
-
-Output naming:
-- CLI: `<input_stem>.shiny_1inN.gba`
-- batch launcher: `<input_stem>.shiny_1inN_mode.gba`
 
 ### Main arguments
 - `input_rom`: source `.gba` ROM path

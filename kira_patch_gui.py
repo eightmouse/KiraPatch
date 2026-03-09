@@ -31,20 +31,26 @@ ODDS_PRESETS = (
 )
 
 COLORS = {
-    "bg": "#07111d",
-    "card": "#0d1d33",
+    "bg": "#07111D",
+    "card": "#0D1D33",
     "card_alt": "#122844",
-    "field": "#10233a",
-    "border": "#1c3a5d",
-    "accent": "#69b7ff",
-    "accent_active": "#8bc8ff",
-    "text": "#eef5ff",
-    "muted": "#9db4d1",
-    "shadow": "#050c16",
+    "field": "#10233A",
+    "border": "#1C3A5D",
+    "accent": "#69B7FF",
+    "accent_active": "#8BC8FF",
+    "text": "#EEF5FF",
+    "muted": "#9DB4D1",
 }
 
+WINDOW_SIZE = "500x740"
+FILES_HEIGHT = 220
+LOG_HEIGHT = 190
 WM_DROPFILES = 0x0233
 GWL_WNDPROC = -4
+DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+DWMWA_BORDER_COLOR = 34
+DWMWA_CAPTION_COLOR = 35
+DWMWA_TEXT_COLOR = 36
 LONG_PTR = ctypes.c_ssize_t
 WNDPROC = ctypes.WINFUNCTYPE(LONG_PTR, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
 
@@ -54,12 +60,20 @@ def resource_path(name: str) -> Path:
     return base / name
 
 
+def colorref_from_hex(hex_color: str) -> int:
+    value = hex_color.lstrip("#")
+    red = int(value[0:2], 16)
+    green = int(value[2:4], 16)
+    blue = int(value[4:6], 16)
+    return red | (green << 8) | (blue << 16)
+
+
 class KiraPatchApp:
     def __init__(self, root: tk.Tk, startup_paths: list[Path]) -> None:
         self.root = root
         self.root.title("KiraPatch")
-        self.root.geometry("520x760")
-        self.root.minsize(500, 720)
+        self.root.geometry(WINDOW_SIZE)
+        self.root.resizable(False, False)
         self.root.configure(bg=COLORS["bg"])
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
@@ -77,10 +91,13 @@ class KiraPatchApp:
         self._window_proc_ref: WNDPROC | None = None
         self._old_wndproc: int | None = None
         self._hwnd: int | None = None
+        self._call_window_proc = None
 
         self._configure_theme()
         self._set_icon()
         self._build_ui()
+        self.root.update_idletasks()
+        self._apply_window_chrome()
         self._enable_file_drops()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -112,8 +129,8 @@ class KiraPatchApp:
         style.map(
             "App.TCombobox",
             foreground=[("readonly", COLORS["text"]), ("disabled", COLORS["muted"])],
-            fieldbackground=[("readonly", COLORS["field"]), ("disabled", COLORS["card_alt"])],
-            background=[("readonly", COLORS["field"]), ("active", COLORS["card_alt"]), ("disabled", COLORS["card_alt"])],
+            fieldbackground=[("readonly", COLORS["field"]), ("disabled", COLORS["field"])],
+            background=[("readonly", COLORS["field"]), ("active", COLORS["card_alt"]), ("disabled", COLORS["field"])],
             selectforeground=[("readonly", COLORS["text"])],
             selectbackground=[("readonly", COLORS["field"])],
         )
@@ -140,12 +157,36 @@ class KiraPatchApp:
             except tk.TclError:
                 pass
 
+    def _apply_window_chrome(self) -> None:
+        if sys.platform != "win32":
+            return
+        self._hwnd = self.root.winfo_id()
+        try:
+            dwmapi = ctypes.windll.dwmapi
+        except AttributeError:
+            return
+
+        def set_attr(attribute: int, value: int) -> None:
+            data = ctypes.c_int(value)
+            dwmapi.DwmSetWindowAttribute(
+                wintypes.HWND(self._hwnd),
+                ctypes.c_uint(attribute),
+                ctypes.byref(data),
+                ctypes.sizeof(data),
+            )
+
+        try:
+            set_attr(DWMWA_USE_IMMERSIVE_DARK_MODE, 1)
+            set_attr(DWMWA_CAPTION_COLOR, colorref_from_hex(COLORS["card"]))
+            set_attr(DWMWA_TEXT_COLOR, colorref_from_hex(COLORS["text"]))
+            set_attr(DWMWA_BORDER_COLOR, colorref_from_hex(COLORS["border"]))
+        except OSError:
+            pass
+
     def _build_ui(self) -> None:
-        container = tk.Frame(self.root, bg=COLORS["bg"], padx=18, pady=18)
+        container = tk.Frame(self.root, bg=COLORS["bg"], padx=16, pady=16)
         container.grid(row=0, column=0, sticky="nsew")
         container.columnconfigure(0, weight=1)
-        container.rowconfigure(1, weight=3)
-        container.rowconfigure(3, weight=2)
 
         header = self._make_card(container)
         header.grid(row=0, column=0, sticky="ew")
@@ -165,18 +206,17 @@ class KiraPatchApp:
         ).grid(row=0, column=1, sticky="w")
         tk.Label(
             header,
-            text="Standalone Gen 3 shiny patcher. Minimal, legal-focused, and built for clean ROMs.",
+            text="Gen3 Shiny Patcher built in Python.\nGitHub@eightmouse",
             bg=COLORS["card"],
             fg=COLORS["muted"],
             justify="left",
-            wraplength=340,
+            wraplength=300,
             font=("Segoe UI", 10),
         ).grid(row=1, column=1, sticky="w", pady=(4, 0))
 
         files_card = self._make_card(container)
-        files_card.grid(row=1, column=0, sticky="nsew", pady=(14, 0))
+        files_card.grid(row=1, column=0, sticky="ew", pady=(12, 0))
         files_card.columnconfigure(0, weight=1)
-        files_card.rowconfigure(2, weight=1)
 
         tk.Label(
             files_card,
@@ -199,8 +239,10 @@ class KiraPatchApp:
             highlightbackground=COLORS["border"],
             highlightthickness=1,
             bd=0,
+            height=FILES_HEIGHT,
         )
-        list_shell.grid(row=2, column=0, sticky="nsew")
+        list_shell.grid(row=2, column=0, sticky="ew")
+        list_shell.grid_propagate(False)
         list_shell.columnconfigure(0, weight=1)
         list_shell.rowconfigure(0, weight=1)
 
@@ -219,17 +261,7 @@ class KiraPatchApp:
         )
         self.file_list.grid(row=0, column=0, sticky="nsew")
 
-        file_scroll = tk.Scrollbar(
-            list_shell,
-            orient="vertical",
-            command=self.file_list.yview,
-            bg=COLORS["card_alt"],
-            troughcolor=COLORS["bg"],
-            activebackground=COLORS["accent"],
-            highlightthickness=0,
-            bd=0,
-            relief="flat",
-        )
+        file_scroll = self._make_scrollbar(list_shell, self.file_list.yview)
         file_scroll.grid(row=0, column=1, sticky="ns")
         self.file_list.configure(yscrollcommand=file_scroll.set)
 
@@ -240,9 +272,7 @@ class KiraPatchApp:
         footer_row.columnconfigure(2, weight=1)
 
         self._make_button(footer_row, "Add ROMs", self.choose_files).grid(row=0, column=0, sticky="ew")
-        self._make_button(footer_row, "Remove", self.remove_selected).grid(
-            row=0, column=1, sticky="ew", padx=8
-        )
+        self._make_button(footer_row, "Remove", self.remove_selected).grid(row=0, column=1, sticky="ew", padx=8)
         self._make_button(footer_row, "Clear", self.clear_files).grid(row=0, column=2, sticky="ew")
 
         tk.Label(
@@ -254,7 +284,7 @@ class KiraPatchApp:
         ).grid(row=4, column=0, sticky="w", pady=(10, 0))
 
         settings_card = self._make_card(container)
-        settings_card.grid(row=2, column=0, sticky="ew", pady=(14, 0))
+        settings_card.grid(row=2, column=0, sticky="ew", pady=(12, 0))
         settings_card.columnconfigure(1, weight=1)
 
         tk.Label(
@@ -270,7 +300,7 @@ class KiraPatchApp:
             bg=COLORS["card"],
             fg=COLORS["muted"],
             font=("Segoe UI", 10),
-            wraplength=420,
+            wraplength=400,
             justify="left",
         ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 12))
 
@@ -304,6 +334,8 @@ class KiraPatchApp:
             bg=COLORS["field"],
             fg=COLORS["text"],
             insertbackground=COLORS["text"],
+            disabledbackground=COLORS["field"],
+            disabledforeground=COLORS["muted"],
             relief="flat",
             highlightbackground=COLORS["border"],
             highlightcolor=COLORS["accent"],
@@ -315,11 +347,11 @@ class KiraPatchApp:
 
         tk.Label(
             settings_card,
-            text="1/16 works, but it can pause for a while. 1/128 or 1/256 feel much smoother.",
+            text="1/16 works, but it can freeze. 1/128 or 1/256 are recommended for normal play.",
             bg=COLORS["card"],
             fg=COLORS["muted"],
             font=("Segoe UI", 9),
-            wraplength=420,
+            wraplength=400,
             justify="left",
         ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(12, 14))
 
@@ -327,9 +359,8 @@ class KiraPatchApp:
         self.patch_button.grid(row=5, column=0, columnspan=2, sticky="ew")
 
         log_card = self._make_card(container)
-        log_card.grid(row=3, column=0, sticky="nsew", pady=(14, 0))
+        log_card.grid(row=3, column=0, sticky="ew", pady=(12, 0))
         log_card.columnconfigure(0, weight=1)
-        log_card.rowconfigure(1, weight=1)
 
         tk.Label(
             log_card,
@@ -345,8 +376,10 @@ class KiraPatchApp:
             highlightbackground=COLORS["border"],
             highlightthickness=1,
             bd=0,
+            height=LOG_HEIGHT,
         )
-        log_shell.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
+        log_shell.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        log_shell.grid_propagate(False)
         log_shell.columnconfigure(0, weight=1)
         log_shell.rowconfigure(0, weight=1)
 
@@ -365,17 +398,7 @@ class KiraPatchApp:
         )
         self.log_text.grid(row=0, column=0, sticky="nsew")
 
-        log_scroll = tk.Scrollbar(
-            log_shell,
-            orient="vertical",
-            command=self.log_text.yview,
-            bg=COLORS["card_alt"],
-            troughcolor=COLORS["bg"],
-            activebackground=COLORS["accent"],
-            highlightthickness=0,
-            bd=0,
-            relief="flat",
-        )
+        log_scroll = self._make_scrollbar(log_shell, self.log_text.yview)
         log_scroll.grid(row=0, column=1, sticky="ns")
         self.log_text.configure(yscrollcommand=log_scroll.set)
 
@@ -401,13 +424,7 @@ class KiraPatchApp:
             bd=0,
         )
 
-    def _make_button(
-        self,
-        parent: tk.Misc,
-        text: str,
-        command: object,
-        accent: bool = False,
-    ) -> tk.Button:
+    def _make_button(self, parent: tk.Misc, text: str, command: object, accent: bool = False) -> tk.Button:
         bg = COLORS["accent"] if accent else COLORS["card_alt"]
         fg = COLORS["bg"] if accent else COLORS["text"]
         active_bg = COLORS["accent_active"] if accent else COLORS["field"]
@@ -419,6 +436,7 @@ class KiraPatchApp:
             fg=fg,
             activebackground=active_bg,
             activeforeground=fg,
+            disabledforeground=COLORS["muted"],
             relief="flat",
             bd=0,
             highlightthickness=0,
@@ -426,6 +444,22 @@ class KiraPatchApp:
             pady=10,
             cursor="hand2",
             font=("Segoe UI Semibold", 10),
+        )
+
+    def _make_scrollbar(self, parent: tk.Misc, command: object) -> tk.Scrollbar:
+        return tk.Scrollbar(
+            parent,
+            orient="vertical",
+            command=command,
+            bg=COLORS["card_alt"],
+            troughcolor=COLORS["bg"],
+            activebackground=COLORS["accent"],
+            highlightbackground=COLORS["card_alt"],
+            highlightcolor=COLORS["card_alt"],
+            elementborderwidth=0,
+            borderwidth=0,
+            relief="flat",
+            width=12,
         )
 
     def _enable_file_drops(self) -> None:
@@ -462,13 +496,7 @@ class KiraPatchApp:
         user32.SetWindowLongPtrW(self._hwnd, GWL_WNDPROC, self._old_wndproc)
         self._old_wndproc = None
 
-    def _window_proc(
-        self,
-        hwnd: int,
-        msg: int,
-        wparam: int,
-        lparam: int,
-    ) -> int:
+    def _window_proc(self, hwnd: int, msg: int, wparam: int, lparam: int) -> int:
         if msg == WM_DROPFILES:
             paths = self._extract_drop_paths(wparam)
             self.root.after(0, lambda drop_paths=paths: self._handle_drop(drop_paths))
@@ -592,8 +620,7 @@ class KiraPatchApp:
 
     def _set_busy(self, busy: bool) -> None:
         entry_state = "normal" if self.odds_choice.get() == "Custom" else "disabled"
-        add_state = tk.DISABLED if busy else tk.NORMAL
-        self.patch_button.configure(state=add_state)
+        self.patch_button.configure(state=tk.DISABLED if busy else tk.NORMAL)
         self.odds_combo.configure(state="disabled" if busy else "readonly")
         self.custom_entry.configure(state="disabled" if busy else entry_state)
 
@@ -614,11 +641,7 @@ class KiraPatchApp:
         self._set_busy(True)
 
         paths = list(self.paths)
-        self.worker = threading.Thread(
-            target=self._run_patch_worker,
-            args=(paths, odds),
-            daemon=True,
-        )
+        self.worker = threading.Thread(target=self._run_patch_worker, args=(paths, odds), daemon=True)
         self.worker.start()
 
     def _run_patch_worker(self, paths: list[Path], odds: int) -> None:
