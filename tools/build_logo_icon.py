@@ -39,9 +39,10 @@ def build_ico_from_png(png_path: Path, ico_path: Path) -> None:
 
 
 def main() -> int:
-    base = Path(__file__).resolve().parent
-    build_ico_from_png(base / "logo.png", base / "logo.ico")
-    print("Wrote logo.ico from logo.png")
+    repo_root = Path(__file__).resolve().parent.parent
+    assets_dir = repo_root / "assets"
+    build_ico_from_png(assets_dir / "logo.png", assets_dir / "logo.ico")
+    print("Wrote assets/logo.ico from assets/logo.png")
     return 0
 
 
