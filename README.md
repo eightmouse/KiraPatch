@@ -105,10 +105,6 @@ Valid `mode` values:
 Output naming from launcher:
 - `<input_stem>.shiny_1inN_mode.gba`
 
-## Launcher icon
-Windows `.bat` files do not store custom icons directly.
-To use your logo icon, launch via [KiraPatch.lnk](KiraPatch.lnk), which points to `KiraPatch.bat` and uses [logo.ico](logo.ico).
-
 ## Supported ROM CRC32 values
 - `0xF0815EE7` - Pokemon Ruby Version (USA, Europe) Rev 0
 - `0x61641576` - Pokemon Ruby Version (USA, Europe) Rev 1
