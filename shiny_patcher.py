@@ -40,6 +40,17 @@ class WrapperHookLayout:
     restore_sp_word_from_reg: tuple[int, int] | None = None
 
 
+@dataclass(frozen=True)
+class DirectPostCreateMonHookSite:
+    name: str
+    hook_callsite: int
+    skip_return_offset: int
+    retry_target: int
+    counter_sp_word: int
+    resume_halfwords: tuple[int, ...]
+    pokemon_reg: int
+
+
 ROM_SPECS: tuple[RomSpec, ...] = (
     RomSpec(
         name="Pokemon Ruby Version (USA, Europe)",
@@ -764,12 +775,13 @@ def find_fixed_personality_wrapper_sites(
     return sites
 
 
-def find_frlg_starter_direct_site(
+def find_frlg_gift_create_mon_sites(
     data: bytearray,
     create_mon_start: int,
-) -> tuple[int, int, int] | None:
-    pre_sig = (0x2101, 0x9100, 0x9001, 0x2000, 0x9002, 0x9003, 0x1C10, 0x21C9, 0x1C32, 0x2320)
-    post_sig = (0xB004, 0xBC70, 0xBC01, 0x4700)
+) -> list[DirectPostCreateMonHookSite]:
+    pre_sig = (0x2000, 0x9000, 0x9001, 0x9002, 0x9003, 0x1C38, 0x1C31, 0x1C22, 0x2320)
+    post_sig = (0xA804, 0x4641, 0x7001, 0x0E2D, 0x7045)
+    sites: list[DirectPostCreateMonHookSite] = []
 
     for off in range(0, len(data) - 4, 2):
         try:
@@ -778,26 +790,28 @@ def find_frlg_starter_direct_site(
             continue
         if target != create_mon_start:
             continue
-        if not _match_halfwords(data, off - 0x14, pre_sig):
+        if not _match_halfwords(data, off - 0x12, pre_sig):
             continue
         if not _match_halfwords(data, off + 4, post_sig):
             continue
-        retry_target = off - 0x34
+        retry_target = off - 0x12
         if retry_target < 0:
             raise ValueError(
-                f"Canonical reroll validation failed at 0x{off:06X}: starter retry target underflow."
+                f"Canonical reroll validation failed at 0x{off:06X}: FRLG gift retry target underflow."
             )
-        struct_ldr_off = off - 0x16
-        struct_ldr_hw = read_halfword(data, struct_ldr_off)
-        if not is_thumb_ldr_literal(struct_ldr_hw) or ((struct_ldr_hw >> 8) & 0x7) != 2:
-            raise ValueError(
-                f"Canonical reroll validation failed at 0x{struct_ldr_off:06X}: expected starter struct literal load into r2."
+        sites.append(
+            DirectPostCreateMonHookSite(
+                name="FRLG script GiveMon wrapper",
+                hook_callsite=off + 4,
+                skip_return_offset=off + 4,
+                retry_target=retry_target,
+                counter_sp_word=4,
+                resume_halfwords=(0xA804, 0x4641),
+                pokemon_reg=7,
             )
-        struct_lit_addr = literal_address_from_ldr(struct_ldr_off, struct_ldr_hw)
-        struct_ptr = int.from_bytes(data[struct_lit_addr : struct_lit_addr + 4], "little")
-        return off + 4, retry_target, struct_ptr
+        )
 
-    return None
+    return sites
 
 
 def find_secondary_create_box_wrapper_sites(
@@ -1093,11 +1107,22 @@ def build_canonical_wrapper_hook(
     return bytes(hook)
 
 
-def build_canonical_frlg_starter_hook(
+def encode_thumb_mov_r0_from_reg(reg: int) -> int:
+    if 0 <= reg <= 7:
+        return 0x1C00 | ((reg & 0x7) << 3)
+    high_reg_map = {8: 0x4640, 9: 0x4648, 10: 0x4650}
+    if reg in high_reg_map:
+        return high_reg_map[reg]
+    raise ValueError(f"Unsupported Pokemon register r{reg}.")
+
+
+def build_canonical_post_call_hook(
     cave_offset: int,
     retry_target: int,
-    struct_ptr: int,
     rerolls_remaining: int,
+    counter_sp_word: int,
+    resume_halfwords: tuple[int, ...],
+    pokemon_reg: int,
 ) -> bytes:
     hook = bytearray()
     labels: dict[str, int] = {}
@@ -1122,17 +1147,9 @@ def build_canonical_frlg_starter_hook(
         emit_hw(0xD000 | ((cond_code & 0xF) << 8))
         fixups.append(("bcond", pos, label, cond_code))
 
-    emit_hw(0x1C20)  # adds r0,r4,#0
-    emit_hw(0x0C01)  # lsr r1,r0,#16
-    emit_ldr_literal(2, "counter_magic_hi")
-    emit_hw(0x4291)  # cmp r1,r2
-    emit_b_cond(0, "counter_ready")  # beq counter_ready
-    emit_ldr_literal(4, "counter_init")
-
-    mark("counter_ready")
-    emit_ldr_literal(0, "struct_ptr")
-    emit_hw(0x6802)  # ldr r2,[r0]
-    emit_hw(0x6843)  # ldr r3,[r0,#4]
+    emit_hw(encode_thumb_mov_r0_from_reg(pokemon_reg))
+    emit_hw(0x6802)  # ldr r2,[r0]    (PID)
+    emit_hw(0x6843)  # ldr r3,[r0,#4] (OTID)
     emit_hw(0x0C11)  # lsr r1,r2,#16
     emit_hw(0x4051)  # eor r1,r2
     emit_hw(0x0C18)  # lsr r0,r3,#16
@@ -1141,23 +1158,32 @@ def build_canonical_frlg_starter_hook(
     emit_hw(0x0409)  # lsl r1,r1,#16
     emit_hw(0x0C09)  # lsr r1,r1,#16
     emit_hw(0x2907)  # cmp r1,#7
-    emit_b_cond(9, "done")  # bls done
+    emit_b_cond(9, "done")  # bls done (already shiny)
 
-    emit_hw(0x1C20)  # adds r0,r4,#0
+    emit_hw(0x9800 | (counter_sp_word & 0xFF))  # ldr r0,[sp,#counter_slot]
+    emit_hw(0x0C01)  # lsr r1,r0,#16
+    emit_ldr_literal(2, "counter_magic_hi")
+    emit_hw(0x4291)  # cmp r1,r2
+    emit_b_cond(0, "counter_ready")  # beq counter_ready
+    emit_ldr_literal(0, "counter_init")
+    emit_hw(0x9000 | (counter_sp_word & 0xFF))  # str r0,[sp,#counter_slot]
+
+    mark("counter_ready")
     emit_hw(0x0401)  # lsl r1,r0,#16
     emit_hw(0x2900)  # cmp r1,#0
     emit_b_cond(0, "done")  # beq done
-    emit_hw(0x3C01)  # subs r4,#1
+    emit_hw(0x3801)  # subs r0,#1
+    emit_hw(0x9000 | (counter_sp_word & 0xFF))  # str r0,[sp,#counter_slot]
     emit_ldr_literal(0, "retry_addr")
     emit_hw(0x4700)  # bx r0
 
     mark("done")
-    emit_hw(0xB004)  # add sp,#0x10
-    emit_hw(0xBC70)  # pop {r4-r6}
+    for hw in resume_halfwords:
+        emit_hw(hw)
     emit_hw(0x4770)  # bx lr
 
     while len(hook) % 4 != 0:
-        emit_hw(0x46C0)
+        emit_hw(0x46C0)  # nop
 
     mark("retry_addr")
     hook.extend((((ROM_EXEC_BASE + retry_target) | 1) & 0xFFFFFFFF).to_bytes(4, "little"))
@@ -1166,8 +1192,6 @@ def build_canonical_frlg_starter_hook(
     hook.extend(counter_value.to_bytes(4, "little"))
     mark("counter_magic_hi")
     hook.extend((0x0000A5A5).to_bytes(4, "little"))
-    mark("struct_ptr")
-    hook.extend((struct_ptr & 0xFFFFFFFF).to_bytes(4, "little"))
 
     for kind, pos, label, extra in fixups:
         if label not in labels:
@@ -1192,6 +1216,22 @@ def build_canonical_frlg_starter_hook(
     return bytes(hook)
 
 
+def find_preferred_code_cave_near(
+    data: bytearray,
+    branch_from: int,
+    required_size: int,
+    preferred_branch_from: int | None = None,
+) -> int:
+    if preferred_branch_from is not None:
+        try:
+            cave_offset = find_code_cave_near(data, preferred_branch_from, required_size)
+            encode_thumb_bl(branch_from, cave_offset)
+            return cave_offset
+        except ValueError:
+            pass
+    return find_code_cave_near(data, branch_from, required_size)
+
+
 def patch_data_canonical(data: bytearray, spec: RomSpec, plan: OddsPlan) -> list[str]:
     cmp_site = canonical_cmp_site(spec)
     cmp_offset = cmp_site.offset
@@ -1213,21 +1253,22 @@ def patch_data_canonical(data: bytearray, spec: RomSpec, plan: OddsPlan) -> list
         data,
         create_mon_start,
     )
-    starter_direct_site = None
+    outer_direct_sites: list[DirectPostCreateMonHookSite] = []
     use_outer_wrapper_c = spec.game_code in {"BPRE", "BPGE"}
     if spec.game_code in {"BPRE", "BPGE"}:
-        starter_direct_site = find_frlg_starter_direct_site(data, create_mon_start)
+        outer_direct_sites = find_frlg_gift_create_mon_sites(data, create_mon_start)
     outer_wrapper_sites = [
         site for site in wrapper_sites
         if site[0].name != "fixed-personality wrapper C" or use_outer_wrapper_c
     ]
     skip_return_addrs = [
         ((ROM_EXEC_BASE + hook_callsite) | 1) & 0xFFFFFFFF
-        for layout, hook_callsite, _ in outer_wrapper_sites
+        for _, hook_callsite, _ in outer_wrapper_sites
     ]
-    if starter_direct_site is not None:
-        starter_hook_callsite, _, _ = starter_direct_site
-        skip_return_addrs.append(((ROM_EXEC_BASE + starter_hook_callsite) | 1) & 0xFFFFFFFF)
+    skip_return_addrs.extend(
+        ((ROM_EXEC_BASE + site.skip_return_offset) | 1) & 0xFFFFFFFF
+        for site in outer_direct_sites
+    )
     skip_caller_returns = tuple(skip_return_addrs)
     primary_create_box_call = primary_hook_callsite - 4
     create_box_target = decode_thumb_bl_target(data, primary_create_box_call)
@@ -1288,32 +1329,50 @@ def patch_data_canonical(data: bytearray, spec: RomSpec, plan: OddsPlan) -> list
             f"(reroll_attempts={plan.reroll_attempts}, retry_target=0x{retry_target:06X})"
         )
 
-    if starter_direct_site is not None:
-        starter_hook_callsite, starter_retry_target, starter_struct_ptr = starter_direct_site
-        starter_cave_offset = find_code_cave_near(data, starter_hook_callsite, hook_payload_size)
-        starter_cave = data[starter_cave_offset : starter_cave_offset + hook_payload_size]
-        if any(b not in (0x00, 0xFF) for b in starter_cave):
+    for site in outer_direct_sites:
+        orig_hw0 = read_halfword(data, site.hook_callsite)
+        orig_hw1 = read_halfword(data, site.hook_callsite + 2)
+        if orig_hw0 != site.resume_halfwords[0]:
             raise ValueError(
-                f"Code cave at 0x{starter_cave_offset:06X} is not blank (not 0x00/0xFF)."
+                f"Canonical reroll validation failed at 0x{site.hook_callsite:06X}: "
+                f"expected 0x{site.resume_halfwords[0]:04X}, found 0x{orig_hw0:04X}."
             )
-        starter_hook = build_canonical_frlg_starter_hook(
-            cave_offset=starter_cave_offset,
-            retry_target=starter_retry_target,
-            struct_ptr=starter_struct_ptr,
+        if orig_hw1 != site.resume_halfwords[1]:
+            raise ValueError(
+                f"Canonical reroll validation failed at 0x{site.hook_callsite + 2:06X}: "
+                f"expected 0x{site.resume_halfwords[1]:04X}, found 0x{orig_hw1:04X}."
+            )
+
+        cave_offset = find_preferred_code_cave_near(
+            data,
+            site.hook_callsite,
+            hook_payload_size,
+            preferred_branch_from=primary_hook_callsite,
+        )
+        cave = data[cave_offset : cave_offset + hook_payload_size]
+        if any(b not in (0x00, 0xFF) for b in cave):
+            raise ValueError(
+                f"Code cave at 0x{cave_offset:06X} is not blank (not 0x00/0xFF)."
+            )
+
+        hook = build_canonical_post_call_hook(
+            cave_offset=cave_offset,
+            retry_target=site.retry_target,
             rerolls_remaining=rerolls_remaining,
+            counter_sp_word=site.counter_sp_word,
+            resume_halfwords=site.resume_halfwords,
+            pokemon_reg=site.pokemon_reg,
         )
-        data[starter_cave_offset : starter_cave_offset + len(starter_hook)] = starter_hook
-        data[starter_hook_callsite : starter_hook_callsite + 4] = encode_thumb_bl(
-            starter_hook_callsite,
-            starter_cave_offset,
+        data[cave_offset : cave_offset + len(hook)] = hook
+        data[site.hook_callsite : site.hook_callsite + 4] = encode_thumb_bl(site.hook_callsite, cave_offset)
+
+        changes.append(
+            f"0x{site.hook_callsite:06X}: replaced with BL 0x{cave_offset:06X} "
+            f"(canonical {site.name} hook)"
         )
         changes.append(
-            f"0x{starter_hook_callsite:06X}: replaced with BL 0x{starter_cave_offset:06X} "
-            "(canonical FRLG starter direct hook)"
-        )
-        changes.append(
-            f"0x{starter_cave_offset:06X}: wrote {len(starter_hook)}-byte canonical FRLG starter hook "
-            f"(reroll_attempts={plan.reroll_attempts}, retry_target=0x{starter_retry_target:06X})"
+            f"0x{cave_offset:06X}: wrote {len(hook)}-byte canonical {site.name} hook "
+            f"(reroll_attempts={plan.reroll_attempts}, retry_target=0x{site.retry_target:06X})"
         )
 
     for layout, wrapper_hook_callsite, wrapper_retry_target in outer_wrapper_sites:
