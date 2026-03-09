@@ -809,6 +809,8 @@ def build_canonical_create_mon_hook(
         emit_hw(0xD000 | ((cond_code & 0xF) << 8))
         fixups.append(("bcond", pos, label, cond_code))
 
+    emit_hw(0x2C00)  # cmp r4,#0
+    emit_b_cond(1, "done")  # bne done (fixed-personality callers are handled by higher-level hooks)
     emit_hw(0x4640)  # mov r0,r8 (struct Pokemon *)
     emit_hw(0x6802)  # ldr r2,[r0]    (PID)
     emit_hw(0x6843)  # ldr r3,[r0,#4] (OTID)
