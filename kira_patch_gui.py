@@ -47,8 +47,8 @@ COLORS = {
 }
 
 WINDOW_SIZE = "920x620"
-FILES_HEIGHT = 236
-LIVE_LOG_HEIGHT = 128
+FILES_HEIGHT = 204
+LIVE_LOG_HEIGHT = 92
 LOG_HEIGHT = 116
 WM_DROPFILES = 0x0233
 GWL_WNDPROC = -4
@@ -133,9 +133,10 @@ class KiraPatchApp:
         self._set_icon()
         self._build_ui()
         self.root.update_idletasks()
-        self._apply_window_frame()
-        self.root.after(160, self._apply_window_frame)
+        self._enable_custom_frame()
+        self.root.after(160, self._enable_custom_frame)
         self._enable_file_drops()
+        self.root.bind("<Map>", self._on_window_map, add="+")
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         if startup_paths:
@@ -194,6 +195,14 @@ class KiraPatchApp:
                 self.root.iconbitmap(default=str(ico_path))
             except tk.TclError:
                 pass
+
+    def _enable_custom_frame(self) -> None:
+        if sys.platform == "win32":
+            try:
+                self.root.overrideredirect(True)
+            except tk.TclError:
+                return
+        self._apply_window_frame()
 
     def _apply_window_frame(self) -> None:
         if sys.platform != "win32":
@@ -308,7 +317,7 @@ class KiraPatchApp:
         ).grid(row=1, column=1, sticky="w", pady=(4, 0))
 
         panels = tk.Frame(container, bg=COLORS["bg"])
-        panels.grid(row=1, column=0, sticky="ew", pady=(12, 0))
+        panels.grid(row=1, column=0, sticky="ew", pady=(10, 0))
         panels.columnconfigure(0, weight=1, uniform="panel")
         panels.columnconfigure(1, weight=1, uniform="panel")
         panels.rowconfigure(0, weight=1)
@@ -368,7 +377,7 @@ class KiraPatchApp:
         self.file_list.configure(yscrollcommand=file_scroll.set)
 
         footer_row = tk.Frame(files_card, bg=COLORS["card"])
-        footer_row.grid(row=3, column=0, sticky="ew", pady=(12, 0))
+        footer_row.grid(row=3, column=0, sticky="ew", pady=(10, 0))
         footer_row.columnconfigure(0, weight=1, uniform="file_buttons")
         footer_row.columnconfigure(1, weight=1, uniform="file_buttons")
         footer_row.columnconfigure(2, weight=1, uniform="file_buttons")
@@ -387,7 +396,7 @@ class KiraPatchApp:
             bg=COLORS["card"],
             fg=COLORS["muted"],
             font=("Segoe UI", 9),
-        ).grid(row=4, column=0, sticky="w", pady=(10, 0))
+        ).grid(row=4, column=0, sticky="w", pady=(8, 0))
 
         settings_card = self._make_card(panels)
         settings_card.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
@@ -471,7 +480,7 @@ class KiraPatchApp:
             bg=COLORS["card"],
             fg=COLORS["text"],
             font=("Segoe UI Semibold", 11),
-        ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(14, 8))
+        ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(10, 6))
 
         live_shell = tk.Frame(
             settings_card,
@@ -488,7 +497,7 @@ class KiraPatchApp:
 
         self.live_log_text = tk.Text(
             live_shell,
-            height=6,
+            height=4,
             wrap="word",
             state="disabled",
             bg=COLORS["field"],
@@ -506,7 +515,7 @@ class KiraPatchApp:
         self.live_log_text.configure(yscrollcommand=live_scroll.set)
 
         log_card = self._make_card(container)
-        log_card.grid(row=2, column=0, sticky="nsew", pady=(12, 0))
+        log_card.grid(row=2, column=0, sticky="nsew", pady=(10, 0))
         log_card.columnconfigure(0, weight=1)
         log_card.rowconfigure(1, weight=1)
 
@@ -655,11 +664,11 @@ class KiraPatchApp:
             parent,
             orient="vertical",
             command=command,
-            bg=COLORS["card_alt"],
+            bg=COLORS["field"],
             troughcolor=COLORS["bg"],
-            activebackground=COLORS["accent"],
-            highlightbackground=COLORS["card_alt"],
-            highlightcolor=COLORS["card_alt"],
+            activebackground=COLORS["card_alt"],
+            highlightbackground=COLORS["field"],
+            highlightcolor=COLORS["field"],
             elementborderwidth=0,
             borderwidth=0,
             relief="flat",
@@ -674,7 +683,16 @@ class KiraPatchApp:
         self.root.geometry(f"+{event.x_root - offset_x}+{event.y_root - offset_y}")
 
     def _minimize_window(self) -> None:
+        if sys.platform == "win32":
+            try:
+                self.root.overrideredirect(False)
+            except tk.TclError:
+                pass
         self.root.iconify()
+
+    def _on_window_map(self, _event: tk.Event) -> None:
+        if sys.platform == "win32" and self.root.state() == "normal":
+            self.root.after(10, self._enable_custom_frame)
 
     def _enable_file_drops(self) -> None:
         if sys.platform != "win32":
