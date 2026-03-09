@@ -24,6 +24,22 @@ class RomSpec:
     patch_sites: tuple[PatchSite, ...]
 
 
+@dataclass(frozen=True)
+class WrapperHookLayout:
+    name: str
+    start_delta: int
+    start_sig: tuple[int, ...]
+    pre_sig_back: int
+    pre_sig: tuple[int, ...]
+    post_sig: tuple[int, ...]
+    retry_offset: int
+    counter_sp_word: int
+    done_halfwords: tuple[int, ...]
+    pokemon_reg: int | None = None
+    pokemon_sp_word: int | None = None
+    restore_sp_word_from_reg: tuple[int, int] | None = None
+
+
 ROM_SPECS: tuple[RomSpec, ...] = (
     RomSpec(
         name="Pokemon Ruby Version (USA, Europe)",
@@ -186,6 +202,45 @@ MAX_CANONICAL_REROLL_ATTEMPTS = 1024
 THUMB_BL_MIN_DELTA = -0x400000
 THUMB_BL_MAX_DELTA = 0x3FFFFE
 ROM_EXEC_BASE = 0x08000000
+FIXED_WRAPPER_LAYOUTS = (
+    WrapperHookLayout(
+        name="fixed-personality wrapper A",
+        start_delta=0x344,
+        start_sig=(0xB5F0, 0x464F, 0x4646, 0xB4C0, 0xB084, 0x4681),
+        pre_sig_back=0x14,
+        pre_sig=(0x2001, 0x9000, 0x9401, 0x2000, 0x9002, 0x9003, 0x4648, 0x4641, 0x1C3A, 0x1C33),
+        post_sig=(0xB004, 0xBC18, 0x4698, 0x46A1, 0xBCF0, 0xBC01, 0x4700),
+        retry_offset=0x20,
+        counter_sp_word=4,
+        done_halfwords=(0xB004, 0xBC18, 0x4698, 0x46A1, 0xBCF0, 0xBC01, 0x4700),
+        pokemon_reg=9,
+        restore_sp_word_from_reg=(4, 8),
+    ),
+    WrapperHookLayout(
+        name="fixed-personality wrapper B",
+        start_delta=0x3AC,
+        start_sig=(0xB5F0, 0x4657, 0x464E, 0x4645, 0xB4E0, 0xB086),
+        pre_sig_back=0x14,
+        pre_sig=(0x2001, 0x9000, 0x9401, 0x2000, 0x9002, 0x9003, 0x9804, 0x1C39, 0x9A05, 0x4653),
+        post_sig=(0xB006, 0xBC38, 0x4698, 0x46A1, 0x46AA, 0xBCF0, 0xBC01, 0x4700),
+        retry_offset=0x0E,
+        counter_sp_word=0,
+        done_halfwords=(0xB006, 0xBC38, 0x4698, 0x46A1, 0x46AA, 0xBCF0, 0xBC01, 0x4700),
+        pokemon_sp_word=4,
+    ),
+    WrapperHookLayout(
+        name="fixed-personality wrapper C",
+        start_delta=0x4AC,
+        start_sig=(0xB5F0, 0x4647, 0xB480, 0xB084, 0x4680),
+        pre_sig_back=0x12,
+        pre_sig=(0x2001, 0x9000, 0x9401, 0x9002, 0x9503, 0x4640, 0x1C31, 0x1C3A, 0x2320),
+        post_sig=(0xB004, 0xBC08, 0x4698, 0xBCF0, 0xBC01, 0x4700),
+        retry_offset=0x12,
+        counter_sp_word=0,
+        done_halfwords=(0xB004, 0xBC08, 0x4698, 0xBCF0, 0xBC01, 0x4700),
+        pokemon_reg=8,
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -651,68 +706,60 @@ def find_canonical_create_mon_layout(data: bytearray, cmp_offset: int) -> tuple[
     return hook_callsite, retry_target
 
 
-def find_nature_wrapper_hook_site(
+def find_fixed_personality_wrapper_sites(
     data: bytearray,
     create_mon_start: int,
-) -> tuple[int, int]:
-    wrapper_sig = (0xB5F0, 0x464F, 0x4646, 0xB4C0, 0xB084, 0x4681)
-    wrapper_start = -1
-    window_start = create_mon_start + 0x300
-    window_end = min(len(data) - (2 * len(wrapper_sig)), create_mon_start + 0x420)
+) -> list[tuple[WrapperHookLayout, int, int]]:
+    sites: list[tuple[WrapperHookLayout, int, int]] = []
 
-    for off in range(window_start, window_end + 1, 2):
-        if _match_halfwords(data, off, wrapper_sig):
-            wrapper_start = off
-            break
+    for layout in FIXED_WRAPPER_LAYOUTS:
+        wrapper_start = create_mon_start + layout.start_delta
+        if wrapper_start < 0 or wrapper_start + (2 * len(layout.start_sig)) > len(data):
+            raise ValueError(
+                f"Canonical reroll validation failed near 0x{create_mon_start:06X}: "
+                f"{layout.name} is outside ROM bounds."
+            )
+        if not _match_halfwords(data, wrapper_start, layout.start_sig):
+            raise ValueError(
+                f"Canonical reroll validation failed at 0x{wrapper_start:06X}: "
+                f"unexpected {layout.name} prologue."
+            )
 
-    if wrapper_start < 0:
-        raise ValueError(
-            f"Canonical reroll validation failed near 0x{create_mon_start:06X}: "
-            "could not locate fixed-personality nature wrapper."
-        )
+        create_mon_call = -1
+        scan_end = min(len(data) - 4, wrapper_start + 0x100)
+        for off in range(wrapper_start, scan_end, 2):
+            try:
+                target = decode_thumb_bl_target(data, off)
+            except ValueError:
+                continue
+            if target == create_mon_start:
+                create_mon_call = off
+                break
 
-    create_mon_call = -1
-    scan_end = min(len(data) - 4, wrapper_start + 0x80)
-    for off in range(wrapper_start, scan_end, 2):
-        try:
-            target = decode_thumb_bl_target(data, off)
-        except ValueError:
-            continue
-        if target == create_mon_start:
-            create_mon_call = off
-            break
+        if create_mon_call < 0:
+            raise ValueError(
+                f"Canonical reroll validation failed near 0x{wrapper_start:06X}: "
+                f"could not locate {layout.name} -> CreateMon callsite."
+            )
 
-    if create_mon_call < 0:
-        raise ValueError(
-            f"Canonical reroll validation failed near 0x{wrapper_start:06X}: "
-            "could not locate nature wrapper -> CreateMon callsite."
-        )
+        pre_sig_start = create_mon_call - layout.pre_sig_back
+        if not _match_halfwords(data, pre_sig_start, layout.pre_sig):
+            raise ValueError(
+                f"Canonical reroll validation failed at 0x{pre_sig_start:06X}: "
+                f"unexpected {layout.name} argument setup."
+            )
 
-    pre_sig = (0x2001, 0x9000, 0x9401, 0x2000, 0x9002, 0x9003, 0x4648, 0x4641, 0x1C3A, 0x1C33)
-    if not _match_halfwords(data, create_mon_call - 0x14, pre_sig):
-        raise ValueError(
-            f"Canonical reroll validation failed at 0x{create_mon_call - 0x14:06X}: "
-            "unexpected fixed-personality wrapper argument setup."
-        )
+        hook_callsite = create_mon_call + 4
+        if not _match_halfwords(data, hook_callsite, layout.post_sig):
+            raise ValueError(
+                f"Canonical reroll validation failed at 0x{hook_callsite:06X}: "
+                f"unexpected {layout.name} epilogue."
+            )
 
-    post_sig = (0xB004, 0xBC18, 0x4698, 0x46A1, 0xBCF0, 0xBC01, 0x4700)
-    hook_callsite = create_mon_call + 4
-    if not _match_halfwords(data, hook_callsite, post_sig):
-        raise ValueError(
-            f"Canonical reroll validation failed at 0x{hook_callsite:06X}: "
-            "unexpected fixed-personality wrapper epilogue."
-        )
+        retry_target = wrapper_start + layout.retry_offset
+        sites.append((layout, hook_callsite, retry_target))
 
-    retry_target = wrapper_start + 0x20
-    try:
-        decode_thumb_bl_target(data, retry_target)
-    except ValueError as exc:
-        raise ValueError(
-            f"Canonical reroll validation failed at 0x{retry_target:06X}: "
-            "unexpected fixed-personality wrapper retry point."
-        ) from exc
-
-    return hook_callsite, retry_target
+    return sites
 
 
 def find_secondary_create_box_wrapper_sites(
@@ -882,14 +929,23 @@ def build_canonical_create_mon_hook(
     return bytes(hook)
 
 
-def build_canonical_highreg_wrapper_hook(
+def build_canonical_wrapper_hook(
     cave_offset: int,
     retry_target: int,
     rerolls_remaining: int,
+    counter_sp_word: int,
+    done_halfwords: tuple[int, ...],
+    pokemon_reg: int | None = None,
+    pokemon_sp_word: int | None = None,
+    restore_sp_word_from_reg: tuple[int, int] | None = None,
 ) -> bytes:
     hook = bytearray()
     labels: dict[str, int] = {}
     fixups: list[tuple[str, int, str, int]] = []
+    mov_r0_from_high = {8: 0x4640, 9: 0x4648, 10: 0x4650}
+
+    if (pokemon_reg is None) == (pokemon_sp_word is None):
+        raise ValueError("Wrapper hook requires exactly one Pokemon source.")
 
     def cur_addr() -> int:
         return cave_offset + len(hook)
@@ -910,7 +966,12 @@ def build_canonical_highreg_wrapper_hook(
         emit_hw(0xD000 | ((cond_code & 0xF) << 8))
         fixups.append(("bcond", pos, label, cond_code))
 
-    emit_hw(0x4648)  # mov r0,r9 (struct Pokemon *)
+    if pokemon_reg is not None:
+        if pokemon_reg not in mov_r0_from_high:
+            raise ValueError(f"Unsupported wrapper Pokemon register r{pokemon_reg}.")
+        emit_hw(mov_r0_from_high[pokemon_reg])
+    else:
+        emit_hw(0x9800 | (pokemon_sp_word & 0xFF))
     emit_hw(0x6802)  # ldr r2,[r0]    (PID)
     emit_hw(0x6843)  # ldr r3,[r0,#4] (OTID)
     emit_hw(0x0C11)  # lsr r1,r2,#16
@@ -923,34 +984,32 @@ def build_canonical_highreg_wrapper_hook(
     emit_hw(0x2907)  # cmp r1,#7
     emit_b_cond(9, "done")  # bls done (already shiny)
 
-    # Reuse the saved-r8 stack slot and restore it from live r8 before returning.
-    emit_hw(0x9804)  # ldr r0,[sp,#0x10]
+    emit_hw(0x9800 | (counter_sp_word & 0xFF))  # ldr r0,[sp,#counter_slot]
     emit_hw(0x0C01)  # lsr r1,r0,#16
     emit_ldr_literal(2, "counter_magic_hi")
     emit_hw(0x4291)  # cmp r1,r2
     emit_b_cond(0, "counter_ready")  # beq counter_ready
     emit_ldr_literal(0, "counter_init")
-    emit_hw(0x9004)  # str r0,[sp,#0x10]
+    emit_hw(0x9000 | (counter_sp_word & 0xFF))  # str r0,[sp,#counter_slot]
 
     mark("counter_ready")
     emit_hw(0x0401)  # lsl r1,r0,#16
     emit_hw(0x2900)  # cmp r1,#0
     emit_b_cond(0, "done")  # beq done
     emit_hw(0x3801)  # subs r0,#1
-    emit_hw(0x9004)  # str r0,[sp,#0x10]
+    emit_hw(0x9000 | (counter_sp_word & 0xFF))  # str r0,[sp,#counter_slot]
     emit_ldr_literal(0, "retry_addr")
     emit_hw(0x4700)  # bx r0
 
     mark("done")
-    emit_hw(0x4640)  # mov r0,r8
-    emit_hw(0x9004)  # str r0,[sp,#0x10]
-    emit_hw(0xB004)  # add sp,#0x10
-    emit_hw(0xBC18)  # pop {r3,r4}
-    emit_hw(0x4698)  # mov r8,r3
-    emit_hw(0x46A1)  # mov r9,r4
-    emit_hw(0xBCF0)  # pop {r4-r7}
-    emit_hw(0xBC01)  # pop {r0}
-    emit_hw(0x4700)  # bx r0
+    if restore_sp_word_from_reg is not None:
+        restore_sp_word, restore_reg = restore_sp_word_from_reg
+        if restore_reg not in mov_r0_from_high:
+            raise ValueError(f"Unsupported wrapper restore register r{restore_reg}.")
+        emit_hw(mov_r0_from_high[restore_reg])
+        emit_hw(0x9000 | (restore_sp_word & 0xFF))
+    for hw in done_halfwords:
+        emit_hw(hw)
 
     while len(hook) % 4 != 0:
         emit_hw(0x46C0)  # nop
@@ -985,6 +1044,7 @@ def build_canonical_highreg_wrapper_hook(
 
     return bytes(hook)
 
+
 def patch_data_canonical(data: bytearray, spec: RomSpec, plan: OddsPlan) -> list[str]:
     cmp_site = canonical_cmp_site(spec)
     cmp_offset = cmp_site.offset
@@ -1002,7 +1062,7 @@ def patch_data_canonical(data: bytearray, spec: RomSpec, plan: OddsPlan) -> list
     if primary_hook_callsite < 0 or primary_hook_callsite + 4 > len(data):
         raise ValueError("ROM layout too small for canonical reroll hook patch.")
 
-    nature_wrapper_hook_callsite, nature_wrapper_retry_target = find_nature_wrapper_hook_site(
+    wrapper_sites = find_fixed_personality_wrapper_sites(
         data,
         create_mon_start,
     )
@@ -1064,31 +1124,37 @@ def patch_data_canonical(data: bytearray, spec: RomSpec, plan: OddsPlan) -> list
             f"(reroll_attempts={plan.reroll_attempts}, retry_target=0x{retry_target:06X})"
         )
 
-    nature_cave_offset = find_code_cave_near(data, nature_wrapper_hook_callsite, hook_payload_size)
-    nature_cave = data[nature_cave_offset : nature_cave_offset + hook_payload_size]
-    if any(b not in (0x00, 0xFF) for b in nature_cave):
-        raise ValueError(
-            f"Code cave at 0x{nature_cave_offset:06X} is not blank (not 0x00/0xFF)."
-        )
+    for layout, wrapper_hook_callsite, wrapper_retry_target in wrapper_sites:
+        wrapper_cave_offset = find_code_cave_near(data, wrapper_hook_callsite, hook_payload_size)
+        wrapper_cave = data[wrapper_cave_offset : wrapper_cave_offset + hook_payload_size]
+        if any(b not in (0x00, 0xFF) for b in wrapper_cave):
+            raise ValueError(
+                f"Code cave at 0x{wrapper_cave_offset:06X} is not blank (not 0x00/0xFF)."
+            )
 
-    nature_hook = build_canonical_highreg_wrapper_hook(
-        cave_offset=nature_cave_offset,
-        retry_target=nature_wrapper_retry_target,
-        rerolls_remaining=rerolls_remaining,
-    )
-    data[nature_cave_offset : nature_cave_offset + len(nature_hook)] = nature_hook
-    data[nature_wrapper_hook_callsite : nature_wrapper_hook_callsite + 4] = encode_thumb_bl(
-        nature_wrapper_hook_callsite,
-        nature_cave_offset,
-    )
-    changes.append(
-        f"0x{nature_wrapper_hook_callsite:06X}: replaced with BL 0x{nature_cave_offset:06X} "
-        "(canonical fixed-personality wrapper hook)"
-    )
-    changes.append(
-        f"0x{nature_cave_offset:06X}: wrote {len(nature_hook)}-byte canonical fixed-personality hook "
-        f"(reroll_attempts={plan.reroll_attempts}, retry_target=0x{nature_wrapper_retry_target:06X})"
-    )
+        wrapper_hook = build_canonical_wrapper_hook(
+            cave_offset=wrapper_cave_offset,
+            retry_target=wrapper_retry_target,
+            rerolls_remaining=rerolls_remaining,
+            counter_sp_word=layout.counter_sp_word,
+            done_halfwords=layout.done_halfwords,
+            pokemon_reg=layout.pokemon_reg,
+            pokemon_sp_word=layout.pokemon_sp_word,
+            restore_sp_word_from_reg=layout.restore_sp_word_from_reg,
+        )
+        data[wrapper_cave_offset : wrapper_cave_offset + len(wrapper_hook)] = wrapper_hook
+        data[wrapper_hook_callsite : wrapper_hook_callsite + 4] = encode_thumb_bl(
+            wrapper_hook_callsite,
+            wrapper_cave_offset,
+        )
+        changes.append(
+            f"0x{wrapper_hook_callsite:06X}: replaced with BL 0x{wrapper_cave_offset:06X} "
+            f"(canonical {layout.name} hook)"
+        )
+        changes.append(
+            f"0x{wrapper_cave_offset:06X}: wrote {len(wrapper_hook)}-byte canonical {layout.name} hook "
+            f"(reroll_attempts={plan.reroll_attempts}, retry_target=0x{wrapper_retry_target:06X})"
+        )
 
     return changes
 
