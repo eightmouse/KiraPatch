@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 from __future__ import annotations
 
 import contextlib
@@ -245,7 +245,7 @@ class KiraPatchApp:
         self.log_queue: Queue[tuple[str, object]] = Queue()
         self.odds_choice = tk.StringVar(value="256")
         self.custom_odds = tk.StringVar(value="256")
-        self.status_text = tk.StringVar(value="Use Add ROMs to select .gba or .rom files.")
+
         self.file_count_text = tk.StringVar(value="No ROMs selected")
 
         self._icon_image: tk.PhotoImage | None = None
@@ -431,7 +431,7 @@ class KiraPatchApp:
         files_card = self._make_card(panels)
         files_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
         files_card.columnconfigure(0, weight=1)
-        files_card.rowconfigure(2, weight=1)
+        files_card.rowconfigure(1, weight=1)
 
         tk.Label(
             files_card,
@@ -440,25 +440,17 @@ class KiraPatchApp:
             fg=COLORS["text"],
             font=("Segoe UI Semibold", 12),
         ).grid(row=0, column=0, sticky="w")
-        tk.Label(
-            files_card,
-            text="Use Add ROMs to select .gba or .rom files.",
-            bg=COLORS["card"],
-            fg=COLORS["muted"],
-            font=("Segoe UI", 10),
-            wraplength=360,
-            justify="left",
-        ).grid(row=1, column=0, sticky="w", pady=(4, 10))
-
         list_shell = tk.Frame(
             files_card,
             bg=COLORS["field"],
             highlightbackground=COLORS["border"],
+            highlightcolor=COLORS["border"],
             highlightthickness=1,
             bd=0,
             height=FILES_HEIGHT,
+            takefocus=0,
         )
-        list_shell.grid(row=2, column=0, sticky="nsew")
+        list_shell.grid(row=1, column=0, sticky="nsew", pady=(8, 0))
         list_shell.grid_propagate(False)
         list_shell.columnconfigure(0, weight=1)
         list_shell.rowconfigure(0, weight=1)
@@ -483,7 +475,7 @@ class KiraPatchApp:
         self.file_list.configure(yscrollcommand=file_scroll.set)
 
         footer_row = tk.Frame(files_card, bg=COLORS["card"])
-        footer_row.grid(row=3, column=0, sticky="ew", pady=(8, 0))
+        footer_row.grid(row=2, column=0, sticky="ew", pady=(8, 0))
         footer_row.columnconfigure(0, weight=1, uniform="file_buttons")
         footer_row.columnconfigure(1, weight=1, uniform="file_buttons")
         footer_row.columnconfigure(2, weight=1, uniform="file_buttons")
@@ -502,7 +494,7 @@ class KiraPatchApp:
             bg=COLORS["card"],
             fg=COLORS["muted"],
             font=("Segoe UI", 9),
-        ).grid(row=4, column=0, sticky="w", pady=(6, 0))
+        ).grid(row=3, column=0, sticky="w", pady=(6, 0))
 
         settings_card = self._make_card(panels)
         settings_card.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
@@ -575,9 +567,11 @@ class KiraPatchApp:
             settings_card,
             bg=COLORS["field"],
             highlightbackground=COLORS["border"],
+            highlightcolor=COLORS["border"],
             highlightthickness=1,
             bd=0,
             height=LIVE_LOG_HEIGHT,
+            takefocus=0,
         )
         live_shell.grid(row=5, column=0, columnspan=2, sticky="nsew", pady=(12, 0))
         live_shell.grid_propagate(False)
@@ -604,17 +598,6 @@ class KiraPatchApp:
         live_scroll = self._make_scrollbar(live_shell, self.log_text.yview)
         live_scroll.grid(row=0, column=1, sticky="ns")
         self.log_text.configure(yscrollcommand=live_scroll.set)
-
-        status = tk.Label(
-            container,
-            textvariable=self.status_text,
-            bg=COLORS["bg"],
-            fg=COLORS["muted"],
-            anchor="w",
-            justify="left",
-            font=("Segoe UI", 9),
-        )
-        status.grid(row=2, column=0, sticky="ew", pady=(10, 0))
 
     def _build_titlebar(self, parent: tk.Misc) -> tk.Frame:
         titlebar = tk.Frame(parent, bg=COLORS["titlebar"], height=38)
@@ -672,8 +655,10 @@ class KiraPatchApp:
             padx=14,
             pady=14,
             highlightbackground=COLORS["border"],
+            highlightcolor=COLORS["border"],
             highlightthickness=1,
             bd=0,
+            takefocus=0,
         )
 
     def _make_button(self, parent: tk.Misc, text: str, command: object, accent: bool = False) -> tk.Button:
@@ -755,9 +740,7 @@ class KiraPatchApp:
             filetypes=[("ROM files", "*.gba *.rom"), ("All files", "*.*")],
         )
         if selected:
-            added, _ignored = self.add_paths([Path(p) for p in selected])
-            if added > 0:
-                self.status_text.set("ROMs added.")
+            self.add_paths([Path(p) for p in selected])
 
     def add_paths(self, new_paths: list[Path]) -> tuple[int, int]:
         known = set()
@@ -800,14 +783,12 @@ class KiraPatchApp:
             self.file_list.delete(idx)
             del self.paths[idx]
         self._update_file_count()
-        self.status_text.set("Selected ROMs removed.")
 
     def clear_files(self) -> None:
         if self.file_list is not None:
             self.file_list.delete(0, "end")
         self.paths.clear()
         self._update_file_count()
-        self.status_text.set("ROM list cleared.")
 
     def _append_log(self, text: str) -> None:
         if self.log_text is None:
@@ -871,7 +852,6 @@ class KiraPatchApp:
             self.log_text.delete("1.0", "end")
             self.log_text.configure(state="disabled")
         self._append_log(f"\n=== Starting patch run (auto mode, 1/{odds}) ===\n")
-        self.status_text.set("Patching...")
         self._set_busy(True)
 
         paths = list(self.paths)
@@ -914,14 +894,10 @@ class KiraPatchApp:
                 kind, payload = self.log_queue.get_nowait()
                 if kind == "log":
                     self._append_log(str(payload))
-                elif kind == "status":
-                    message = str(payload)
-                    self.status_text.set(message)
-                    self._append_log(message + "\n")
+
                 elif kind == "done":
                     summary = str(payload)
                     self._append_log(summary + "\n")
-                    self.status_text.set(summary)
                     self._set_busy(False)
         except Empty:
             pass
@@ -938,6 +914,7 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
 
 
 
