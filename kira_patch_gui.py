@@ -249,7 +249,7 @@ class KiraPatchApp:
         self.log_queue: Queue[tuple[str, object]] = Queue()
         self.odds_choice = tk.StringVar(value="256")
         self.custom_odds = tk.StringVar(value="256")
-        self.status_text = tk.StringVar(value="Drag .gba files into the window or click Add ROMs.")
+        self.status_text = tk.StringVar(value="Drag .gba or .rom files into the window or click Add ROMs.")
         self.file_count_text = tk.StringVar(value="No ROMs selected")
 
         self._icon_image: tk.PhotoImage | None = None
@@ -457,7 +457,7 @@ class KiraPatchApp:
         ).grid(row=0, column=0, sticky="w")
         tk.Label(
             files_card,
-            text="Drag and drop .gba files into the window, or use Add ROMs.",
+            text="Drag and drop .gba or .rom files into the window, or use Add ROMs.",
             bg=COLORS["card"],
             fg=COLORS["muted"],
             font=("Segoe UI", 10),
@@ -820,7 +820,7 @@ class KiraPatchApp:
                 self.status_text.set(f"Added {added} file(s) by drag and drop.")
                 self._append_log(f"Added {added} file(s) by drag and drop.\n")
             elif ignored > 0:
-                self.status_text.set("No .gba files were added from that drop.")
+                self.status_text.set("No .gba or .rom files were added from that drop.")
                 self._append_log("Ignored dropped items that were not new .gba files.\n")
         except Exception as exc:
             self._report_drop_error(str(exc))
@@ -857,7 +857,7 @@ class KiraPatchApp:
     def choose_files(self) -> None:
         selected = filedialog.askopenfilenames(
             title="Select Gen 3 ROMs",
-            filetypes=[("GBA ROMs", "*.gba"), ("All files", "*.*")],
+            filetypes=[("ROM files", "*.gba *.rom"), ("All files", "*.*")],
         )
         if selected:
             added, _ignored = self.add_paths([Path(p) for p in selected])
@@ -875,7 +875,7 @@ class KiraPatchApp:
         added = 0
         ignored = 0
         for path in new_paths:
-            if path.suffix.lower() != ".gba":
+            if path.suffix.lower() not in {".gba", ".rom"}:
                 ignored += 1
                 continue
             try:
@@ -963,7 +963,7 @@ class KiraPatchApp:
         if self.worker is not None and self.worker.is_alive():
             return
         if not self.paths:
-            messagebox.showerror("KiraPatch", "Add at least one .gba ROM first.")
+            messagebox.showerror("KiraPatch", "Add at least one .gba or .rom ROM first.")
             return
 
         odds = self._selected_odds()
@@ -1037,7 +1037,7 @@ class KiraPatchApp:
         self.root.after(100, self._poll_log_queue)
 
 def main() -> int:
-    startup_paths = [Path(arg) for arg in sys.argv[1:] if arg.lower().endswith(".gba")]
+    startup_paths = [Path(arg) for arg in sys.argv[1:] if arg.lower().endswith((".gba", ".rom"))]
 
     root = tk.Tk()
     KiraPatchApp(root, startup_paths)
