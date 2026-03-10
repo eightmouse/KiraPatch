@@ -75,14 +75,13 @@ Do not use:
 Download the prebuilt `KiraPatch.exe` from the Releases section on the right, or build it locally with `build_standalone.bat` if you want your own copy.
 
 The EXE is now the main user-facing launcher. It opens a compact GUI where you can:
-- drag and drop one or more `.gba` ROMs into the window
-- add ROMs manually with the file picker
-- choose the shiny odds you want
+- add one or more `.gba` or `.rom` files with the file picker
 - patch in `auto` mode
+- choose the shiny odds you want
 
 Recommended settings:
 - `odds=128` or `odds=256` for smoother gameplay
-- `odds=16` if you want aggressive testing and do not mind freezes or pauses
+- `odds=16` if you want aggressive testing and do not mind freezes
 
 Output naming from the EXE:
 - `<input_stem>.shiny_1inN.gba`
@@ -132,3 +131,4 @@ Start with `auto` mode on a clean ROM, pick a sane odds value like `1/128` or `1
 
 ## License
 Distributed under the MIT License. See `LICENSE` for more information.
+
