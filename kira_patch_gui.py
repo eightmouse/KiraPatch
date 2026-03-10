@@ -263,10 +263,6 @@ class KiraPatchApp:
         self._configure_theme()
         self._set_icon()
         self._build_ui()
-        self.root.update_idletasks()
-        self._enable_custom_frame()
-        self.root.after(160, self._enable_custom_frame)
-        self.root.bind("<Map>", self._on_window_map, add="+")
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         if startup_paths:
@@ -393,13 +389,10 @@ class KiraPatchApp:
         shell = tk.Frame(self.root, bg=COLORS["bg"], padx=0, pady=0)
         shell.grid(row=0, column=0, sticky="nsew")
         shell.columnconfigure(0, weight=1)
-        shell.rowconfigure(1, weight=1)
-
-        titlebar = self._build_titlebar(shell)
-        titlebar.grid(row=0, column=0, sticky="ew")
+        shell.rowconfigure(0, weight=1)
 
         body = tk.Frame(shell, bg=COLORS["bg"])
-        body.grid(row=1, column=0, sticky="nsew")
+        body.grid(row=0, column=0, sticky="nsew")
         body.columnconfigure(0, weight=1)
         body.rowconfigure(0, weight=1)
 
@@ -522,7 +515,7 @@ class KiraPatchApp:
             bg=COLORS["card"],
             fg=COLORS["text"],
             font=("Segoe UI Semibold", 12),
-        ).grid(row=0, column=0, columnspan=2, sticky="w")
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 12))
         tk.Label(
             settings_card,
             text="Odds (1 in N)",
@@ -566,7 +559,7 @@ class KiraPatchApp:
 
         tk.Label(
             settings_card,
-            text="1/16 is valid but it can pause. 1/128 or 1/256 are smoother for normal play.",
+            text="1/16 is valid but it can freeze. 1/128 or 1/256 are smoother for normal play.",
             bg=COLORS["card"],
             fg=COLORS["muted"],
             font=("Segoe UI", 9),
@@ -930,10 +923,6 @@ class KiraPatchApp:
                     self._append_log(summary + "\n")
                     self.status_text.set(summary)
                     self._set_busy(False)
-                    if "FAIL: 0" in summary:
-                        messagebox.showinfo("KiraPatch", summary)
-                    else:
-                        messagebox.showwarning("KiraPatch", summary)
         except Empty:
             pass
         self.root.after(100, self._poll_log_queue)
