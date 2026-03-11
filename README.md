@@ -2,6 +2,7 @@
 ![Python](https://img.shields.io/badge/python-3.8+-blue.svg)
 ![Target](https://img.shields.io/badge/Target-GBA-orange)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)
+[![Support me on Ko-fi](https://img.shields.io/badge/Support%20Me-Ko--fi-F16061?logo=ko-fi&logoColor=white)](https://ko-fi.com/eightmouse)
 
 # KiraPatch
 
