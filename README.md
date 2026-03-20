@@ -7,11 +7,11 @@
 # KiraPatch
 
 > [!IMPORTANT]
-> Current status: Method 1 hardening is in a much better place locally. I have the `1/64` starter base path testing clean across all 5 supported vanilla Gen 3 games on a real `.sav` + reset-based runner, and I now also have clean legal shiny hits on the newer starter harness in the R/S/E family at `1/128` and `1/256`.
+> Current status: I am still hardening Method 1 for the next release, but local testing is in a much better place now. The biggest remaining work is on the stubborn FireRed/LeafGreen starter path, while the other games are looking healthier.
 >
-> I am still finishing the last FR/LG shiny-hit closure and freeze hardening before the next release, because I do not want to ship another half-finished update. The current public `2.0.0` build may still show legality or freeze issues.
+> The current public `2.0.0` build can still have rough edges depending on the game and encounter type. That can mean lag, freezes, or shinies that are not as clean or reliable as I want them to be yet.
 >
-> Right now, I still treat `1/64` as the hardening target, `1/128` and `1/256` as the safer public choices, and `1/32` or lower as experimental. Wild, static, gift, and egg hardening comes after the starter shiny gate.
+> Right now I am focused on getting starter hunting at `1/64`, `1/128`, and `1/256` into a place I can stand behind before I move on to gifts, statics, wild encounters, and the rest. `1/32` or lower is still experimental for now.
 
 ## Disclaimer
 KiraPatch is for educational and archival use.
