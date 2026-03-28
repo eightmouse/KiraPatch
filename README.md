@@ -7,11 +7,13 @@
 # KiraPatch
 
 > [!IMPORTANT]
-> Current status: I am still hardening Method 1 for the next release, but local testing is in a much better place now. The biggest remaining work is on the stubborn FireRed/LeafGreen starter path, while the other games are looking healthier.
+> Current status: I am getting close to Method 1 closure for the next release. Local testing is in a much better place now, and starter hunting is the main focus until it is fully locked in.
+>
+> The biggest remaining work is still on the stubborn FireRed starter path. The other games are in a healthier place, but I do not want to overclaim before the final FireRed checks are done.
 >
 > The current public `2.0.0` build can still have rough edges depending on the game and encounter type. That can mean lag, freezes, or shinies that are not as clean or reliable as I want them to be yet.
 >
-> Right now I am focused on getting starter hunting at `1/64`, `1/128`, and `1/256` into a place I can stand behind before I move on to gifts, statics, wild encounters, and the rest. `1/32` or lower is still experimental for now.
+> Right now I am focused on getting starter hunting at `1/64`, `1/128`, and `1/256` into a place I can fully stand behind before I move on to gifts, statics, wild encounters, and the rest. `1/32` or lower is still experimental for now.
 
 ## Disclaimer
 KiraPatch is for educational and archival use.
