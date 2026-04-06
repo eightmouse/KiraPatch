@@ -1,0 +1,181 @@
+{
+  "firered": {
+    "rom": ".roms/Pokemon - Fire Red.gba",
+    "state": ".roms/.savestates/Pokemon - Fire Red.patched_1in16_auto_20260311_231228.ss1",
+    "description": "FireRed starter table state; default cursor leads into Squirtle preview.",
+    "buttons": [
+      "A"
+    ],
+    "wait_after": 1.0,
+    "output": "artifacts/firered_starter_probe.png",
+    "nickname": "SQUIRTLE",
+    "capture_presses": 14,
+    "save": ".roms/.savestates/Pokemon - Fire Red.patched_1in16_auto_20260311_231228.sav",
+    "save_unthrottled": false,
+    "save_capture_presses": 19,
+    "save_profiles": {
+      "64": {
+        "presses": 8,
+        "settle_wait": 0.25,
+        "post_wait": 0.75,
+        "post_buttons": "START",
+        "post_press_interval": 0.1,
+        "extract_mode": "memory",
+        "memory_retry_timeout": 20.0,
+        "memory_retry_interval": 0.25,
+        "prefer_method1_generic": false,
+        "patch_env": {
+          "KIRAPATCH_DEBUG_FRLG_STARTER_FILTER": "gift-only"
+        }
+      },
+      "128": {
+        "presses": 8,
+        "launch_jitter_step_ms": 17,
+        "reset_wait": 3.1,
+        "settle_wait": 0.25,
+        "launch_wait": 8.0,
+        "post_wait": 0.75,
+        "post_buttons": "START",
+        "post_press_interval": 0.1,
+        "extract_mode": "memory",
+        "memory_retry_timeout": 20.0,
+        "memory_retry_interval": 0.1,
+        "prefer_method1_generic": false,
+        "patch_env": {
+          "KIRAPATCH_DEBUG_FRLG_STARTER_FILTER": "gift-only"
+        }
+      },
+      "256": {
+        "presses": 18,
+        "press_interval": 0.55,
+        "reset_wait": 2.6,
+        "settle_wait": 0.25,
+        "launch_wait": 6.0,
+        "post_wait": 0.75,
+        "post_buttons": "DOWN,A",
+        "post_press_interval": 0.1,
+        "adaptive_naming_min_presses": 16,
+        "adaptive_naming_keyboard_buttons": "START",
+        "extract_mode": "memory",
+        "memory_retry_timeout": 20.0,
+        "memory_retry_interval": 0.25,
+        "wait_for_party_match": false,
+        "prefer_method1_generic": false
+      }
+    }
+  },
+  "leafgreen": {
+    "rom": ".roms/Pokemon - Leaf Green.gba",
+    "state": ".roms/.savestates/Pokemon - Leaf Green.patched_1in16_auto_20260311_232947.ss1",
+    "description": "LeafGreen starter table state; default cursor leads into Bulbasaur preview.",
+    "buttons": [
+      "A"
+    ],
+    "wait_after": 1.0,
+    "output": "artifacts/leafgreen_starter_probe.png",
+    "nickname": "BULBASAUR",
+    "capture_presses": 17,
+    "save": ".roms/.savestates/Pokemon - Leaf Green.patched_1in16_auto_20260311_232947.sav",
+    "save_capture_presses": 14,
+    "save_profiles": {
+      "64": {
+        "presses": 13,
+        "settle_wait": 0.5
+      },
+      "128": {
+        "presses": 19,
+        "press_interval": 0.45,
+        "reset_wait": 2.4,
+        "launch_jitter_step_ms": 17
+      },
+      "256": {
+        "presses": 16,
+        "press_interval": 0.45,
+        "reset_wait": 2.4
+      }
+    }
+  },
+  "sapphire": {
+    "rom": ".roms/Pokemon - Sapphire.gba",
+    "state": ".roms/.savestates/Pokemon - Sapphire.patched_1in16_auto_20260311_232949.ss1",
+    "description": "Sapphire Route 101 bag state; one A opens the bag starter selection.",
+    "buttons": [
+      "A"
+    ],
+    "wait_after": 1.0,
+    "output": "artifacts/sapphire_starter_probe.png",
+    "nickname": "TORCHIC",
+    "capture_presses": 13,
+    "save": ".roms/.savestates/Pokemon - Sapphire.patched_1in16_auto_20260311_232949.sav",
+    "save_capture_presses": 14,
+    "save_profiles": {
+      "64": {
+        "presses": 14
+      },
+      "128": {
+        "presses": 14,
+        "reset_wait": 2.2
+      },
+      "256": {
+        "presses": 14,
+        "reset_wait": 2.6
+      }
+    }
+  },
+  "ruby": {
+    "rom": ".roms/Pokemon - Ruby.gba",
+    "state": ".roms/.savestates/Pokemon - Ruby.ss1",
+    "description": "Ruby Route 101 bag state; one A opens the bag starter selection.",
+    "buttons": [
+      "A"
+    ],
+    "wait_after": 1.0,
+    "output": "artifacts/ruby_starter_probe.png",
+    "nickname": "TORCHIC",
+    "capture_presses": 13,
+    "save": ".roms/.savestates/Pokemon - Ruby.sav",
+    "save_capture_presses": 11,
+    "save_profiles": {
+      "64": {
+        "presses": 11
+      },
+      "128": {
+        "presses": 10,
+        "press_interval": 0.4,
+        "reset_wait": 2.2
+      },
+      "256": {
+        "presses": 10,
+        "press_interval": 0.4,
+        "reset_wait": 2.2
+      }
+    }
+  },
+  "emerald": {
+    "rom": ".roms/Pokemon - Emerald.gba",
+    "state": ".roms/.savestates/Pokemon - Emerald.ss1",
+    "description": "Emerald Route 101 bag state; one A opens the bag starter selection.",
+    "buttons": [
+      "A"
+    ],
+    "wait_after": 1.0,
+    "output": "artifacts/emerald_starter_probe.png",
+    "nickname": "TORCHIC",
+    "capture_presses": 10,
+    "save": ".roms/.savestates/Pokemon - Emerald.sav",
+    "save_capture_presses": 18,
+    "save_profiles": {
+      "64": {
+        "presses": 18
+      },
+      "128": {
+        "presses": 18,
+        "reset_wait": 2.8
+      },
+      "256": {
+        "presses": 20,
+        "reset_wait": 2.6
+      }
+    }
+  }
+}

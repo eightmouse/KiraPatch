@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 from __future__ import annotations
 
 import contextlib
@@ -551,7 +551,7 @@ class KiraPatchApp:
 
         tk.Label(
             settings_card,
-            text="1/16 is valid but it can freeze. 1/128 or 1/256 are smoother for normal play.",
+            text="Current support target: 1/64, 1/128, or 1/256. 1/32 and lower are experimental and may freeze or fail legality checks.",
             bg=COLORS["card"],
             fg=COLORS["muted"],
             font=("Segoe UI", 9),
@@ -914,8 +914,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-
-
-
 

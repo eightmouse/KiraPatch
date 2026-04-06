@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import binascii
 import math
+import os
 from dataclasses import dataclass
 
 from pathlib import Path
@@ -46,9 +47,16 @@ class DirectPostCreateMonHookSite:
     hook_callsite: int
     skip_return_offset: int
     retry_target: int
-    counter_sp_word: int
+    counter_sp_word: int | None
     resume_halfwords: tuple[int, ...]
     pokemon_reg: int
+    counter_ewram_addr: int | None = None
+    restore_sp_word_from_reg: tuple[int, int] | None = None
+    counter_reg: int | None = None
+    retry_call_target: int | None = None
+    retry_arg1_reg: int | None = None
+    retry_arg2_reg: int | None = None
+    retry_arg3_imm: int | None = None
 
 
 ROM_SPECS: tuple[RomSpec, ...] = (
@@ -210,9 +218,34 @@ BASE_SHINY_NUMERATOR = 65536
 BASE_THRESHOLD = 8
 MAX_NATIVE_THRESHOLD = 255
 MAX_CANONICAL_REROLL_ATTEMPTS = 1024
+SUPPORTED_CANONICAL_ODDS_FLOOR = 64
+STRETCH_CANONICAL_ODDS = 32
 THUMB_BL_MIN_DELTA = -0x400000
 THUMB_BL_MAX_DELTA = 0x3FFFFE
 ROM_EXEC_BASE = 0x08000000
+DEBUG_TRACE_EWRAM_ADDR = 0x0203FE80
+DEBUG_TRACE_PRIMARY_EWRAM_ADDR = 0x0203FEC0
+DEBUG_TRACE_STARTER_DIRECT_EWRAM_ADDR = 0x0203FF00
+HOOK_OWNER_FLAG_EWRAM_ADDR = 0x0203FF40
+HOOK_GIFT_COUNTER_EWRAM_ADDR = 0x0203FF44
+DEBUG_TRACE_STARTER_ALT_EWRAM_ADDR = 0x0203FF80
+DEBUG_TRACE_RECORD_SIZE = 0x40
+DEBUG_TRACE_COUNT_ENTRY_OFFSET = 0x2C
+DEBUG_TRACE_COUNT_RETRY_OFFSET = 0x30
+DEBUG_TRACE_COUNT_DONE_OFFSET = 0x34
+DEBUG_TRACE_COUNT_SHINY_OFFSET = 0x38
+DEBUG_TRACE_COUNT_OWNER_BLOCK_OFFSET = 0x3C
+DEBUG_TRACE_MAGIC = 0x5254504B  # 'KPTR'
+DEBUG_TRACE_TAG_GIFT = 0x54464947  # 'GIFT'
+DEBUG_TRACE_TAG_PRIMARY = 0x4D495250  # 'PRIM'
+DEBUG_TRACE_TAG_STARTER_DIRECT = 0x52494453  # 'SDIR'
+DEBUG_TRACE_TAG_STARTER_ALT = 0x544C4153  # 'SALT'
+DEBUG_TRACE_FLAG_ENTRY = 0x52544E45  # 'ENTR'
+DEBUG_TRACE_FLAG_RETRY = 0x59525452  # 'RTRY'
+DEBUG_TRACE_FLAG_DONE = 0x454E4F44  # 'DONE'
+DEBUG_TRACE_FLAG_INIT = 0x54494E49  # 'INIT'
+DEBUG_TRACE_FLAG_READY = 0x59444552  # 'REDY'
+DEBUG_TRACE_FLAG_SHINY = 0x4E594853  # 'SHYN'
 FIXED_WRAPPER_LAYOUTS = (
     WrapperHookLayout(
         name="fixed-personality wrapper A",
@@ -269,6 +302,19 @@ class OddsPlan:
     reroll_capped: bool = False
 
 
+def describe_canonical_support_tier(odds: int) -> tuple[str, str | None]:
+    if odds < STRETCH_CANONICAL_ODDS:
+        return (
+            "experimental",
+            "Odds below 1/32 are currently experimental and may freeze, hitch, or fail legality checks.",
+        )
+    if odds < SUPPORTED_CANONICAL_ODDS_FLOOR:
+        return (
+            "experimental",
+            "1/32 is still experimental until it passes the same legality and playability gate as 1/64.",
+        )
+    return ("current-target", None)
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -289,7 +335,8 @@ def parse_args() -> argparse.Namespace:
         metavar="N",
         help=(
             "Desired shiny rate as '1 in N'. Example: 4096 gives approximately 1/4096 "
-            "(base game is 8192)."
+            "(base game is 8192). Current supported canonical floor is 1/64; more "
+            "aggressive odds are still allowed but treated as experimental."
         ),
     )
     parser.add_argument(
@@ -297,8 +344,9 @@ def parse_args() -> argparse.Namespace:
         choices=("auto", "canonical", "legacy", "native", "reroll"),
         default="auto",
         help=(
-            "Patch strategy: auto/canonical/reroll uses canonical PID rerolls (PKHeX-valid shinies). "
-            "legacy/native keep the older visual-check threshold patch behavior."
+            "Patch strategy: auto/canonical/reroll uses canonical PID rerolls "
+            "(current-standard PKHeX-clean target). legacy/native keep the older "
+            "visual-check threshold patch behavior."
         ),
     )
     parser.add_argument(
@@ -794,7 +842,10 @@ def find_frlg_gift_create_mon_sites(
             continue
         if not _match_halfwords(data, off + 4, post_sig):
             continue
-        retry_target = off - 0x12
+        # The FR/LG gift/starter wrapper primes r0 just before the helper call
+        # that leads into CreateMon. Retrying from the BL itself skips that setup
+        # and reenters with stale state, so we must jump back two bytes earlier.
+        retry_target = off - 0x1A
         if retry_target < 0:
             raise ValueError(
                 f"Canonical reroll validation failed at 0x{off:06X}: FRLG gift retry target underflow."
@@ -805,13 +856,145 @@ def find_frlg_gift_create_mon_sites(
                 hook_callsite=off + 4,
                 skip_return_offset=off + 4,
                 retry_target=retry_target,
-                counter_sp_word=0,
+                # This wrapper reenters through the real caller path on retries,
+                # so the retry counter must survive full wrapper reentry instead
+                # of living on the local stack.
+                counter_sp_word=None,
+                counter_ewram_addr=HOOK_GIFT_COUNTER_EWRAM_ADDR,
                 resume_halfwords=(0xA804, 0x4641),
                 pokemon_reg=7,
             )
         )
 
     return sites
+
+
+def find_frlg_starter_create_mon_sites(
+    data: bytearray,
+    create_mon_start: int,
+) -> list[DirectPostCreateMonHookSite]:
+    pre_sig = (0x9100, 0x9001, 0x2000, 0x9002, 0x9003, 0x1C10, 0x21C9, 0x1C32, 0x2320)
+    post_sig = (0xB004, 0xBC70, 0xBC01, 0x4700)
+    sites: list[DirectPostCreateMonHookSite] = []
+
+    for off in range(0, len(data) - 4, 2):
+        try:
+            target = decode_thumb_bl_target(data, off)
+        except ValueError:
+            continue
+        if target != create_mon_start:
+            continue
+        if not _match_halfwords(data, off - 0x12, pre_sig):
+            continue
+        if not _match_halfwords(data, off + 4, post_sig):
+            continue
+        retry_target = off - 0x1A
+        if retry_target < 0:
+            raise ValueError(
+                f"Canonical reroll validation failed at 0x{off:06X}: FRLG starter retry target underflow."
+            )
+        sites.append(
+            DirectPostCreateMonHookSite(
+                name="FRLG starter direct CreateMon caller",
+                hook_callsite=off + 4,
+                skip_return_offset=off + 4,
+                retry_target=retry_target,
+                counter_sp_word=None,
+                resume_halfwords=(0xB004, 0xBC70, 0xBC01, 0x4700),
+                pokemon_reg=0,
+                counter_reg=4,
+            )
+        )
+
+    return sites
+
+
+def find_frlg_alt_starter_create_mon_sites(
+    data: bytearray,
+    create_mon_start: int,
+) -> list[DirectPostCreateMonHookSite]:
+    pre_sig = (0x9000, 0x9001, 0x9002, 0x9003, 0x4640, 0x1C21, 0x1C2A, 0x2320)
+    post_sig = (0x2E00, 0xD009, 0xA804, 0x7006, 0x1C01)
+    done_sig = (0xB005, 0xBC08, 0x4698, 0xBCF0, 0xBC01, 0x4700)
+    sites: list[DirectPostCreateMonHookSite] = []
+
+    for off in range(0, len(data) - 4, 2):
+        try:
+            target = decode_thumb_bl_target(data, off)
+        except ValueError:
+            continue
+        if target != create_mon_start:
+            continue
+        if not _match_halfwords(data, off - 0x10, pre_sig):
+            continue
+        if not _match_halfwords(data, off + 4, post_sig):
+            continue
+        if not _match_halfwords(data, off + 0x1C, done_sig):
+            continue
+        retry_target = off - 0x1A
+        if retry_target < 0:
+            raise ValueError(
+                f"Canonical reroll validation failed at 0x{off:06X}: FRLG alt starter retry target underflow."
+            )
+        sites.append(
+            DirectPostCreateMonHookSite(
+                name="FRLG alternate starter CreateMon caller",
+                # The alt caller has a small branch/set-data block immediately after
+                # CreateMon. Patching there would require relocating a PC-relative
+                # conditional branch, so hook the final epilogue instead.
+                hook_callsite=off + 0x1C,
+                skip_return_offset=off + 0x1C,
+                retry_target=retry_target,
+                # The alternate caller keeps r4-r7 live across the helper and retry path,
+                # so use the saved r7 stack slot as counter storage and restore it on exit.
+                counter_sp_word=9,
+                resume_halfwords=done_sig,
+                pokemon_reg=8,
+                restore_sp_word_from_reg=(9, 7),
+            )
+        )
+
+    return sites
+
+
+def find_rs_starter_create_mon_sites(
+    data: bytearray,
+    create_mon_start: int,
+) -> list[DirectPostCreateMonHookSite]:
+    pre_sig = (0x218F, 0x0049, 0x9500, 0x9501, 0x9502, 0x9503, 0x1C20, 0x2202, 0x2320)
+    post_sig = (0x9504, 0x1C20, 0x210C, 0xAA04)
+    sites: list[DirectPostCreateMonHookSite] = []
+
+    for off in range(0, len(data) - 4, 2):
+        try:
+            target = decode_thumb_bl_target(data, off)
+        except ValueError:
+            continue
+        if target != create_mon_start:
+            continue
+        if not _match_halfwords(data, off - 0x12, pre_sig):
+            continue
+        if not _match_halfwords(data, off + 4, post_sig):
+            continue
+        retry_target = off - 0x18
+        if retry_target < 0:
+            raise ValueError(
+                f"Canonical reroll validation failed at 0x{off:06X}: RS starter retry target underflow."
+            )
+        sites.append(
+            DirectPostCreateMonHookSite(
+                name="RS starter direct CreateMon caller",
+                hook_callsite=off + 4,
+                skip_return_offset=off + 4,
+                retry_target=retry_target,
+                counter_sp_word=5,
+                resume_halfwords=(0x9504, 0x1C20),
+                pokemon_reg=4,
+            )
+        )
+
+    return sites
+
 
 
 def find_secondary_create_box_wrapper_sites(
@@ -836,7 +1019,7 @@ def find_secondary_create_box_wrapper_sites(
             continue
         if not _match_halfwords(data, off + 4, wrapper_post_sig):
             continue
-        sites.append((off, off - 0x12, 2, 4, ()))
+        sites.append((off + 4, off - 0x12, 2, 4, wrapper_post_sig[:2]))
 
     return sites
 
@@ -885,6 +1068,8 @@ def build_canonical_create_mon_hook(
     restore_r3_sp_word: int,
     resume_halfwords: tuple[int, ...],
     skip_caller_returns: tuple[int, ...],
+    skip_mode: str = "all",
+    debug_trace_tag: int | None = None,
 ) -> bytes:
     hook = bytearray()
     labels: dict[str, int] = {}
@@ -909,17 +1094,75 @@ def build_canonical_create_mon_hook(
         emit_hw(0xD000 | ((cond_code & 0xF) << 8))
         fixups.append(("bcond", pos, label, cond_code))
 
-    emit_hw(0x2C00)  # cmp r4,#0
-    emit_b_cond(0, "pid_check")  # beq pid_check (non-fixed-personality caller)
+    def emit_b(label: str) -> None:
+        pos = cur_addr()
+        emit_hw(0xE000)
+        fixups.append(("b", pos, label, 0))
+
+    def emit_trace_count_increment(base_reg: int, count_reg: int, offset: int) -> None:
+        emit_hw(encode_thumb_ldr_imm(count_reg, base_reg, offset))
+        emit_hw(encode_thumb_add_imm(count_reg, 1))
+        emit_hw(encode_thumb_str_imm(count_reg, base_reg, offset))
+
+    def emit_primary_trace_runtime_reset(base_reg: int, scratch_reg: int) -> None:
+        emit_hw(0x2300 | (scratch_reg & 0x7))  # movs scratch,#0
+        for offset in (
+            0x0C,  # retry flag
+            0x10,  # done flag
+            0x24,  # shiny flag
+            DEBUG_TRACE_COUNT_ENTRY_OFFSET,
+            DEBUG_TRACE_COUNT_RETRY_OFFSET,
+            DEBUG_TRACE_COUNT_DONE_OFFSET,
+            DEBUG_TRACE_COUNT_SHINY_OFFSET,
+            DEBUG_TRACE_COUNT_OWNER_BLOCK_OFFSET,
+        ):
+            emit_hw(encode_thumb_str_imm(scratch_reg, base_reg, offset))
+
+    emit_ldr_literal(0, "owner_flag_addr")
+    emit_hw(0x6801)  # ldr r1,[r0]
+    emit_hw(0x2900)  # cmp r1,#0
+    if debug_trace_tag is not None:
+        emit_b_cond(0, "owner_clear")  # beq owner_clear
+        emit_ldr_literal(0, "trace_addr")
+        emit_trace_count_increment(0, 1, DEBUG_TRACE_COUNT_OWNER_BLOCK_OFFSET)
+        emit_b("done")
+        mark("owner_clear")
+    else:
+        emit_b_cond(0, "owner_clear")
+        emit_b("done")
+        mark("owner_clear")
+
+    if skip_mode not in {"all", "fixed-only"}:
+        raise ValueError(f"Unsupported primary hook skip mode: {skip_mode}")
+    if skip_mode == "fixed-only":
+        # Diagnostic mode: preserve the older behavior where the primary hook
+        # only yields to outer caller-specific hooks when r4 marks the
+        # fixed-personality side. This is useful for isolating whether the newer
+        # universal skip ownership logic is suppressing outer FR/LG liveness.
+        emit_hw(0x2C00)  # cmp r4,#0
+        emit_b_cond(0, "pid_check")  # beq pid_check
     emit_hw(0x980C)  # ldr r0,[sp,#0x30] (saved caller return address)
     for idx, _ in enumerate(skip_caller_returns):
         emit_ldr_literal(1, f"skip_return_{idx}")
         emit_hw(0x4288)  # cmp r0,r1
-        emit_b_cond(0, "done")  # beq done (handled by an outer fixed-personality hook)
+        emit_b_cond(0, "done")  # beq done (handled by an outer caller-specific hook)
     mark("pid_check")
     emit_hw(0x4640)  # mov r0,r8 (struct Pokemon *)
     emit_hw(0x6802)  # ldr r2,[r0]    (PID)
     emit_hw(0x6843)  # ldr r3,[r0,#4] (OTID)
+    if debug_trace_tag is not None:
+        emit_ldr_literal(0, "trace_addr")
+        emit_ldr_literal(1, "trace_magic")
+        emit_hw(encode_thumb_str_imm(1, 0, 0x00))
+        emit_ldr_literal(1, "trace_tag")
+        emit_hw(encode_thumb_str_imm(1, 0, 0x04))
+        emit_ldr_literal(1, "trace_entry")
+        emit_hw(encode_thumb_str_imm(1, 0, 0x08))
+        emit_hw(encode_thumb_str_imm(2, 0, 0x14))
+        emit_hw(encode_thumb_str_imm(3, 0, 0x18))
+        emit_hw(0x990C)  # ldr r1,[sp,#0x30] (saved caller return address)
+        emit_hw(encode_thumb_str_imm(1, 0, 0x20))
+        emit_trace_count_increment(0, 1, DEBUG_TRACE_COUNT_ENTRY_OFFSET)
     emit_hw(0x0C11)  # lsr r1,r2,#16
     emit_hw(0x4051)  # eor r1,r2
     emit_hw(0x0C18)  # lsr r0,r3,#16
@@ -928,7 +1171,7 @@ def build_canonical_create_mon_hook(
     emit_hw(0x0409)  # lsl r1,r1,#16
     emit_hw(0x0C09)  # lsr r1,r1,#16
     emit_hw(0x2907)  # cmp r1,#7
-    emit_b_cond(9, "done")  # bls done (already shiny)
+    emit_b_cond(9, "shiny_done")  # bls shiny_done (already shiny)
 
     # Use a caller-specific stack slot so retries persist without clobbering live args.
     emit_hw(0x9800 | (counter_sp_word & 0xFF))  # ldr r0,[sp,#counter_slot]
@@ -936,6 +1179,9 @@ def build_canonical_create_mon_hook(
     emit_ldr_literal(2, "counter_magic_hi")
     emit_hw(0x4291)  # cmp r1,r2
     emit_b_cond(0, "counter_ready")  # beq counter_ready
+    if debug_trace_tag is not None:
+        emit_ldr_literal(1, "trace_addr")
+        emit_primary_trace_runtime_reset(1, 3)
     emit_ldr_literal(0, "counter_init")
     emit_hw(0x9000 | (counter_sp_word & 0xFF))  # str r0,[sp,#counter_slot]
 
@@ -946,10 +1192,29 @@ def build_canonical_create_mon_hook(
     emit_hw(0x3801)  # subs r0,#1
     emit_hw(0x9000 | (counter_sp_word & 0xFF))  # str r0,[sp,#counter_slot]
     emit_hw(0x9B00 | (restore_r3_sp_word & 0xFF))  # ldr r3,[sp,#restore_slot]
+    if debug_trace_tag is not None:
+        emit_ldr_literal(1, "trace_addr")
+        emit_ldr_literal(2, "trace_retry")
+        emit_hw(encode_thumb_str_imm(2, 1, 0x0C))
+        emit_hw(encode_thumb_str_imm(0, 1, 0x1C))
+        emit_trace_count_increment(1, 3, DEBUG_TRACE_COUNT_RETRY_OFFSET)
     emit_ldr_literal(0, "retry_addr")
     emit_hw(0x4700)  # bx r0 (jump back to caller retry-entry block)
 
+    mark("shiny_done")
+    if debug_trace_tag is not None:
+        emit_ldr_literal(0, "trace_addr")
+        emit_ldr_literal(1, "trace_shiny")
+        emit_hw(encode_thumb_str_imm(1, 0, 0x24))
+        emit_trace_count_increment(0, 1, DEBUG_TRACE_COUNT_SHINY_OFFSET)
+    emit_b("done")
+
     mark("done")
+    if debug_trace_tag is not None:
+        emit_ldr_literal(0, "trace_addr")
+        emit_ldr_literal(1, "trace_done")
+        emit_hw(encode_thumb_str_imm(1, 0, 0x10))
+        emit_trace_count_increment(0, 1, DEBUG_TRACE_COUNT_DONE_OFFSET)
     for hw in resume_halfwords:
         emit_hw(hw)
     emit_hw(0x4770)  # bx lr
@@ -964,6 +1229,23 @@ def build_canonical_create_mon_hook(
     hook.extend(counter_value.to_bytes(4, "little"))
     mark("counter_magic_hi")
     hook.extend((0x0000A5A5).to_bytes(4, "little"))
+    mark("owner_flag_addr")
+    hook.extend((HOOK_OWNER_FLAG_EWRAM_ADDR & 0xFFFFFFFF).to_bytes(4, "little"))
+    if debug_trace_tag is not None:
+        mark("trace_addr")
+        hook.extend((DEBUG_TRACE_PRIMARY_EWRAM_ADDR & 0xFFFFFFFF).to_bytes(4, "little"))
+        mark("trace_magic")
+        hook.extend((DEBUG_TRACE_MAGIC & 0xFFFFFFFF).to_bytes(4, "little"))
+        mark("trace_tag")
+        hook.extend((debug_trace_tag & 0xFFFFFFFF).to_bytes(4, "little"))
+        mark("trace_entry")
+        hook.extend((DEBUG_TRACE_FLAG_ENTRY & 0xFFFFFFFF).to_bytes(4, "little"))
+        mark("trace_retry")
+        hook.extend((DEBUG_TRACE_FLAG_RETRY & 0xFFFFFFFF).to_bytes(4, "little"))
+        mark("trace_done")
+        hook.extend((DEBUG_TRACE_FLAG_DONE & 0xFFFFFFFF).to_bytes(4, "little"))
+        mark("trace_shiny")
+        hook.extend((DEBUG_TRACE_FLAG_SHINY & 0xFFFFFFFF).to_bytes(4, "little"))
     for idx, skip_return in enumerate(skip_caller_returns):
         mark(f"skip_return_{idx}")
         hook.extend((skip_return & 0xFFFFFFFF).to_bytes(4, "little"))
@@ -985,6 +1267,8 @@ def build_canonical_create_mon_hook(
             hook[idx : idx + 2] = hw.to_bytes(2, "little")
         elif kind == "bcond":
             hook[idx : idx + 2] = encode_thumb_b_cond(pos, target, extra)
+        elif kind == "b":
+            hook[idx : idx + 2] = encode_thumb_b(pos, target)
         else:
             raise ValueError(f"Internal hook fixup kind error: {kind}")
 
@@ -1044,7 +1328,7 @@ def build_canonical_wrapper_hook(
     emit_hw(0x0409)  # lsl r1,r1,#16
     emit_hw(0x0C09)  # lsr r1,r1,#16
     emit_hw(0x2907)  # cmp r1,#7
-    emit_b_cond(9, "done")  # bls done (already shiny)
+    emit_b_cond(9, "shiny_done")  # bls shiny_done (already shiny)
 
     emit_hw(0x9800 | (counter_sp_word & 0xFF))  # ldr r0,[sp,#counter_slot]
     emit_hw(0x0C01)  # lsr r1,r0,#16
@@ -1063,6 +1347,7 @@ def build_canonical_wrapper_hook(
     emit_ldr_literal(0, "retry_addr")
     emit_hw(0x4700)  # bx r0
 
+    mark("shiny_done")
     mark("done")
     if restore_sp_word_from_reg is not None:
         restore_sp_word, restore_reg = restore_sp_word_from_reg
@@ -1116,17 +1401,69 @@ def encode_thumb_mov_r0_from_reg(reg: int) -> int:
     raise ValueError(f"Unsupported Pokemon register r{reg}.")
 
 
+def encode_thumb_mov_reg_from_r0(reg: int) -> int:
+    if 0 <= reg <= 7:
+        return 0x1C00 | (reg & 0x7)
+    high_reg_map = {8: 0x4680, 9: 0x4688, 10: 0x4690}
+    if reg in high_reg_map:
+        return high_reg_map[reg]
+    raise ValueError(f"Unsupported destination register r{reg}.")
+
+
+def encode_thumb_str_imm(rd: int, rb: int, imm: int) -> int:
+    if not (0 <= rd <= 7 and 0 <= rb <= 7):
+        raise ValueError("Thumb STR immediate only supports low registers.")
+    if imm < 0 or imm % 4 != 0 or imm > 124:
+        raise ValueError(f"Unsupported STR immediate offset: {imm}")
+    imm5 = imm // 4
+    return 0x6000 | ((imm5 & 0x1F) << 6) | ((rb & 0x7) << 3) | (rd & 0x7)
+
+
+def encode_thumb_ldr_imm(rd: int, rb: int, imm: int) -> int:
+    if not (0 <= rd <= 7 and 0 <= rb <= 7):
+        raise ValueError("Thumb LDR immediate only supports low registers.")
+    if imm < 0 or imm % 4 != 0 or imm > 124:
+        raise ValueError(f"Unsupported LDR immediate offset: {imm}")
+    imm5 = imm // 4
+    return 0x6800 | ((imm5 & 0x1F) << 6) | ((rb & 0x7) << 3) | (rd & 0x7)
+
+
+def encode_thumb_add_imm(rd: int, imm: int) -> int:
+    if not 0 <= rd <= 7:
+        raise ValueError("Thumb ADD immediate only supports low registers.")
+    if not 0 <= imm <= 0xFF:
+        raise ValueError(f"Unsupported ADD immediate: {imm}")
+    return 0x3000 | ((rd & 0x7) << 8) | (imm & 0xFF)
+
+
 def build_canonical_post_call_hook(
     cave_offset: int,
     retry_target: int,
     rerolls_remaining: int,
-    counter_sp_word: int,
+    counter_sp_word: int | None,
+    counter_ewram_addr: int | None,
     resume_halfwords: tuple[int, ...],
     pokemon_reg: int,
+    restore_sp_word_from_reg: tuple[int, int] | None = None,
+    counter_reg: int | None = None,
+    retry_call_target: int | None = None,
+    retry_arg1_reg: int | None = None,
+    retry_arg2_reg: int | None = None,
+    retry_arg3_imm: int | None = None,
+    debug_trace_tag: int | None = None,
+    debug_trace_addr: int | None = None,
 ) -> bytes:
     hook = bytearray()
     labels: dict[str, int] = {}
     fixups: list[tuple[str, int, str, int]] = []
+
+    counter_sources = (
+        (1 if counter_sp_word is not None else 0)
+        + (1 if counter_reg is not None else 0)
+        + (1 if counter_ewram_addr is not None else 0)
+    )
+    if counter_sources != 1:
+        raise ValueError("Post-call hook requires exactly one counter storage source.")
 
     def cur_addr() -> int:
         return cave_offset + len(hook)
@@ -1147,9 +1484,47 @@ def build_canonical_post_call_hook(
         emit_hw(0xD000 | ((cond_code & 0xF) << 8))
         fixups.append(("bcond", pos, label, cond_code))
 
+    def emit_b(label: str) -> None:
+        pos = cur_addr()
+        emit_hw(0xE000)
+        fixups.append(("b", pos, label, 0))
+
+    def emit_trace_count_increment(base_reg: int, count_reg: int, offset: int) -> None:
+        emit_hw(encode_thumb_ldr_imm(count_reg, base_reg, offset))
+        emit_hw(encode_thumb_add_imm(count_reg, 1))
+        emit_hw(encode_thumb_str_imm(count_reg, base_reg, offset))
+
+    def emit_gift_trace_runtime_reset(base_reg: int, scratch_reg: int) -> None:
+        emit_hw(0x2300 | (scratch_reg & 0x7))  # movs scratch,#0
+        for offset in (
+            0x0C,  # retry flag
+            0x10,  # done flag
+            0x20,  # init flag
+            0x24,  # ready flag
+            0x28,  # shiny flag
+            DEBUG_TRACE_COUNT_ENTRY_OFFSET,
+            DEBUG_TRACE_COUNT_RETRY_OFFSET,
+            DEBUG_TRACE_COUNT_DONE_OFFSET,
+            DEBUG_TRACE_COUNT_SHINY_OFFSET,
+            DEBUG_TRACE_COUNT_OWNER_BLOCK_OFFSET,
+        ):
+            emit_hw(encode_thumb_str_imm(scratch_reg, base_reg, offset))
+
+    mark("pid_check")
     emit_hw(encode_thumb_mov_r0_from_reg(pokemon_reg))
     emit_hw(0x6802)  # ldr r2,[r0]    (PID)
     emit_hw(0x6843)  # ldr r3,[r0,#4] (OTID)
+    if debug_trace_tag is not None:
+        emit_ldr_literal(0, "trace_addr")
+        emit_ldr_literal(1, "trace_magic")
+        emit_hw(encode_thumb_str_imm(1, 0, 0x00))
+        emit_ldr_literal(1, "trace_tag")
+        emit_hw(encode_thumb_str_imm(1, 0, 0x04))
+        emit_ldr_literal(1, "trace_entry")
+        emit_hw(encode_thumb_str_imm(1, 0, 0x08))
+        emit_hw(encode_thumb_str_imm(2, 0, 0x14))
+        emit_hw(encode_thumb_str_imm(3, 0, 0x18))
+        emit_trace_count_increment(0, 1, DEBUG_TRACE_COUNT_ENTRY_OFFSET)
     emit_hw(0x0C11)  # lsr r1,r2,#16
     emit_hw(0x4051)  # eor r1,r2
     emit_hw(0x0C18)  # lsr r0,r3,#16
@@ -1158,26 +1533,107 @@ def build_canonical_post_call_hook(
     emit_hw(0x0409)  # lsl r1,r1,#16
     emit_hw(0x0C09)  # lsr r1,r1,#16
     emit_hw(0x2907)  # cmp r1,#7
-    emit_b_cond(9, "done")  # bls done (already shiny)
+    emit_b_cond(9, "shiny_done")  # bls shiny_done (already shiny)
 
-    emit_hw(0x9800 | (counter_sp_word & 0xFF))  # ldr r0,[sp,#counter_slot]
+    if counter_reg is not None:
+        emit_hw(encode_thumb_mov_r0_from_reg(counter_reg))
+    elif counter_ewram_addr is not None:
+        emit_ldr_literal(2, "counter_addr")
+        emit_hw(0x6810)  # ldr r0,[r2]
+    else:
+        emit_hw(0x9800 | (counter_sp_word & 0xFF))  # ldr r0,[sp,#counter_slot]
     emit_hw(0x0C01)  # lsr r1,r0,#16
     emit_ldr_literal(2, "counter_magic_hi")
     emit_hw(0x4291)  # cmp r1,r2
-    emit_b_cond(0, "counter_ready")  # beq counter_ready
+    emit_b_cond(0, "counter_ready_existing")  # beq counter_ready_existing
+    if debug_trace_tag is not None:
+        emit_ldr_literal(1, "trace_addr")
+        emit_gift_trace_runtime_reset(1, 3)
+        emit_ldr_literal(2, "trace_init")
+        emit_hw(encode_thumb_str_imm(2, 1, 0x20))
     emit_ldr_literal(0, "counter_init")
-    emit_hw(0x9000 | (counter_sp_word & 0xFF))  # str r0,[sp,#counter_slot]
+    if counter_reg is not None:
+        emit_hw(encode_thumb_mov_reg_from_r0(counter_reg))
+    elif counter_ewram_addr is not None:
+        emit_ldr_literal(2, "counter_addr")
+        emit_hw(0x6010)  # str r0,[r2]
+    else:
+        emit_hw(0x9000 | (counter_sp_word & 0xFF))  # str r0,[sp,#counter_slot]
+    emit_b("counter_ready")
+
+    mark("counter_ready_existing")
+    if debug_trace_tag is not None:
+        emit_ldr_literal(1, "trace_addr")
+        emit_ldr_literal(2, "trace_ready")
+        emit_hw(encode_thumb_str_imm(2, 1, 0x24))
 
     mark("counter_ready")
     emit_hw(0x0401)  # lsl r1,r0,#16
     emit_hw(0x2900)  # cmp r1,#0
     emit_b_cond(0, "done")  # beq done
     emit_hw(0x3801)  # subs r0,#1
-    emit_hw(0x9000 | (counter_sp_word & 0xFF))  # str r0,[sp,#counter_slot]
-    emit_ldr_literal(0, "retry_addr")
-    emit_hw(0x4700)  # bx r0
+    if counter_reg is not None:
+        emit_hw(encode_thumb_mov_reg_from_r0(counter_reg))
+    elif counter_ewram_addr is not None:
+        emit_ldr_literal(2, "counter_addr")
+        emit_hw(0x6010)  # str r0,[r2]
+    else:
+        emit_hw(0x9000 | (counter_sp_word & 0xFF))  # str r0,[sp,#counter_slot]
+    if debug_trace_tag is not None:
+        emit_ldr_literal(1, "trace_addr")
+        emit_ldr_literal(2, "trace_retry")
+        emit_hw(encode_thumb_str_imm(2, 1, 0x0C))
+        emit_hw(encode_thumb_str_imm(0, 1, 0x1C))
+        emit_trace_count_increment(1, 3, DEBUG_TRACE_COUNT_RETRY_OFFSET)
+    if retry_call_target is not None:
+        if retry_arg1_reg is None or retry_arg2_reg is None or retry_arg3_imm is None:
+            raise ValueError("Direct CreateMon retry loop requires retry arg registers and r3 immediate.")
+        emit_hw(encode_thumb_mov_r0_from_reg(pokemon_reg))
+        emit_hw(0x1C00 | ((retry_arg1_reg & 0x7) << 3) | 0x1)  # mov r1,rx
+        emit_hw(0x1C00 | ((retry_arg2_reg & 0x7) << 3) | 0x2)  # mov r2,rx
+        if not 0 <= retry_arg3_imm <= 0xFF:
+            raise ValueError(f"Unsupported retry r3 immediate: {retry_arg3_imm}")
+        emit_hw(0x2300 | (retry_arg3_imm & 0xFF))  # movs r3,#imm
+        emit_ldr_literal(0, "owner_flag_addr")
+        emit_hw(0x2101)  # movs r1,#1
+        emit_hw(encode_thumb_str_imm(1, 0, 0x00))
+        hook.extend(encode_thumb_bl(cur_addr(), retry_call_target))
+        emit_ldr_literal(0, "owner_flag_addr")
+        emit_hw(0x2100)  # movs r1,#0
+        emit_hw(encode_thumb_str_imm(1, 0, 0x00))
+        emit_b("pid_check")
+    else:
+        if counter_ewram_addr is not None:
+            emit_ldr_literal(1, "owner_flag_addr")
+            emit_hw(0x2001)  # movs r0,#1
+            emit_hw(0x6008)  # str r0,[r1]
+        emit_ldr_literal(0, "retry_addr")
+        emit_hw(0x4700)  # bx r0
+
+    mark("shiny_done")
+    if debug_trace_tag is not None:
+        emit_ldr_literal(0, "trace_addr")
+        emit_ldr_literal(1, "trace_shiny")
+        emit_hw(encode_thumb_str_imm(1, 0, 0x28))
+        emit_trace_count_increment(0, 1, DEBUG_TRACE_COUNT_SHINY_OFFSET)
+    emit_b("done")
 
     mark("done")
+    if debug_trace_tag is not None:
+        emit_ldr_literal(0, "trace_addr")
+        emit_ldr_literal(1, "trace_done")
+        emit_hw(encode_thumb_str_imm(1, 0, 0x10))
+        emit_trace_count_increment(0, 1, DEBUG_TRACE_COUNT_DONE_OFFSET)
+    if counter_ewram_addr is not None:
+        emit_ldr_literal(1, "counter_addr")
+        emit_hw(0x2000)  # movs r0,#0
+        emit_hw(0x6008)  # str r0,[r1]
+        emit_ldr_literal(1, "owner_flag_addr")
+        emit_hw(0x6008)  # str r0,[r1]
+    if restore_sp_word_from_reg is not None:
+        restore_sp_word, restore_reg = restore_sp_word_from_reg
+        emit_hw(encode_thumb_mov_r0_from_reg(restore_reg))
+        emit_hw(0x9000 | (restore_sp_word & 0xFF))
     for hw in resume_halfwords:
         emit_hw(hw)
     emit_hw(0x4770)  # bx lr
@@ -1192,6 +1648,33 @@ def build_canonical_post_call_hook(
     hook.extend(counter_value.to_bytes(4, "little"))
     mark("counter_magic_hi")
     hook.extend((0x0000A5A5).to_bytes(4, "little"))
+    if counter_ewram_addr is not None:
+        mark("counter_addr")
+        hook.extend((counter_ewram_addr & 0xFFFFFFFF).to_bytes(4, "little"))
+    if retry_call_target is not None or counter_ewram_addr is not None:
+        mark("owner_flag_addr")
+        hook.extend((HOOK_OWNER_FLAG_EWRAM_ADDR & 0xFFFFFFFF).to_bytes(4, "little"))
+    if debug_trace_tag is not None:
+        if debug_trace_addr is None:
+            debug_trace_addr = DEBUG_TRACE_EWRAM_ADDR
+        mark("trace_addr")
+        hook.extend((debug_trace_addr & 0xFFFFFFFF).to_bytes(4, "little"))
+        mark("trace_magic")
+        hook.extend((DEBUG_TRACE_MAGIC & 0xFFFFFFFF).to_bytes(4, "little"))
+        mark("trace_tag")
+        hook.extend((debug_trace_tag & 0xFFFFFFFF).to_bytes(4, "little"))
+        mark("trace_entry")
+        hook.extend((DEBUG_TRACE_FLAG_ENTRY & 0xFFFFFFFF).to_bytes(4, "little"))
+        mark("trace_retry")
+        hook.extend((DEBUG_TRACE_FLAG_RETRY & 0xFFFFFFFF).to_bytes(4, "little"))
+        mark("trace_done")
+        hook.extend((DEBUG_TRACE_FLAG_DONE & 0xFFFFFFFF).to_bytes(4, "little"))
+        mark("trace_init")
+        hook.extend((DEBUG_TRACE_FLAG_INIT & 0xFFFFFFFF).to_bytes(4, "little"))
+        mark("trace_ready")
+        hook.extend((DEBUG_TRACE_FLAG_READY & 0xFFFFFFFF).to_bytes(4, "little"))
+        mark("trace_shiny")
+        hook.extend((DEBUG_TRACE_FLAG_SHINY & 0xFFFFFFFF).to_bytes(4, "little"))
 
     for kind, pos, label, extra in fixups:
         if label not in labels:
@@ -1210,6 +1693,8 @@ def build_canonical_post_call_hook(
             hook[idx : idx + 2] = hw.to_bytes(2, "little")
         elif kind == "bcond":
             hook[idx : idx + 2] = encode_thumb_b_cond(pos, target, extra)
+        elif kind == "b":
+            hook[idx : idx + 2] = encode_thumb_b(pos, target)
         else:
             raise ValueError(f"Internal hook fixup kind error: {kind}")
 
@@ -1257,17 +1742,114 @@ def patch_data_canonical(data: bytearray, spec: RomSpec, plan: OddsPlan) -> list
     use_outer_wrapper_c = spec.game_code in {"BPRE", "BPGE"}
     if spec.game_code in {"BPRE", "BPGE"}:
         outer_direct_sites = find_frlg_gift_create_mon_sites(data, create_mon_start)
+        outer_direct_sites.extend(find_frlg_starter_create_mon_sites(data, create_mon_start))
+        outer_direct_sites.extend(find_frlg_alt_starter_create_mon_sites(data, create_mon_start))
+
+    elif spec.game_code in {"AXVE", "AXPE"}:
+        outer_direct_sites = find_rs_starter_create_mon_sites(data, create_mon_start)
     outer_wrapper_sites = [
         site for site in wrapper_sites
         if site[0].name != "fixed-personality wrapper C" or use_outer_wrapper_c
     ]
-    skip_return_addrs = [
-        ((ROM_EXEC_BASE + hook_callsite) | 1) & 0xFFFFFFFF
-        for _, hook_callsite, _ in outer_wrapper_sites
-    ]
+    skip_exclude_gift_direct = os.environ.get("KIRAPATCH_DEBUG_SKIP_GIFT_DIRECT", "").strip().lower() in {"1", "true", "yes", "on"}
+    skip_wrapper_returns = os.environ.get("KIRAPATCH_DEBUG_SKIP_WRAPPER_RETURNS", "").strip().lower() not in {"1", "true", "yes", "on"}
+
+    debug_filter = os.environ.get("KIRAPATCH_DEBUG_FRLG_STARTER_FILTER", "").strip().lower()
+    primary_skip_mode = os.environ.get("KIRAPATCH_DEBUG_PRIMARY_SKIP_MODE", "").strip().lower() or "all"
+    disable_secondary_wrapper_hooks = os.environ.get("KIRAPATCH_DEBUG_DISABLE_SECONDARY_WRAPPERS", "").strip().lower() in {"1", "true", "yes", "on"}
+    trace_frlg_gift = os.environ.get("KIRAPATCH_DEBUG_TRACE_FRLG_GIFT", "").strip().lower() in {"1", "true", "yes", "on"}
+    trace_primary_hook = os.environ.get("KIRAPATCH_DEBUG_TRACE_PRIMARY", "").strip().lower() in {"1", "true", "yes", "on"}
+    trace_frlg_starters = os.environ.get("KIRAPATCH_DEBUG_TRACE_FRLG_STARTERS", "").strip().lower() in {"1", "true", "yes", "on"}
+    include_gift_direct = os.environ.get("KIRAPATCH_DEBUG_INCLUDE_GIFT_DIRECT", "").strip().lower() in {"1", "true", "yes", "on"}
+    def is_starter_direct(site: DirectPostCreateMonHookSite) -> bool:
+        return site.name == "FRLG starter direct CreateMon caller"
+
+    def is_starter_alt(site: DirectPostCreateMonHookSite) -> bool:
+        return site.name == "FRLG alternate starter CreateMon caller"
+
+    def is_gift_direct(site: DirectPostCreateMonHookSite) -> bool:
+        return site.name == "FRLG script GiveMon wrapper"
+
+    if spec.game_code == "BPRE" and not debug_filter:
+        # FireRed starter signoff now lands cleanly when the GiveMon caller
+        # owns the outer reroll path while the primary CreateMon hook still
+        # observes wrapper returns. Keep the legacy starter-direct / alt
+        # callers available for debugging only; the shipping path should not
+        # reintroduce their bad final handoff.
+        outer_direct_sites = [site for site in outer_direct_sites if is_gift_direct(site)]
+        skip_wrapper_returns = False
+
+    if debug_filter and spec.game_code in {"BPRE", "BPGE"}:
+
+        if debug_filter == "direct-only":
+            outer_direct_sites = [site for site in outer_direct_sites if is_starter_direct(site)]
+            outer_wrapper_sites = []
+        elif debug_filter == "alt-only":
+            outer_direct_sites = [site for site in outer_direct_sites if is_starter_alt(site)]
+            outer_wrapper_sites = []
+        elif debug_filter == "gift-only":
+            outer_direct_sites = [site for site in outer_direct_sites if is_gift_direct(site)]
+            outer_wrapper_sites = []
+        elif debug_filter == "gift-wrappers":
+            outer_direct_sites = [site for site in outer_direct_sites if is_gift_direct(site)]
+        elif debug_filter == "gift-wrappers-primary":
+            outer_direct_sites = [site for site in outer_direct_sites if is_gift_direct(site)]
+            # Local FireRed starter canary: keep the fixed-personality wrappers
+            # patched, but let the primary CreateMon hook continue to observe
+            # their returns. This preserves the wrapper-side legality helpers
+            # without forcing wrapper ownership over the final starter PID/IV
+            # chain.
+            skip_wrapper_returns = False
+        elif debug_filter == "gift-direct":
+            outer_direct_sites = [
+                site for site in outer_direct_sites
+                if is_gift_direct(site) or is_starter_direct(site)
+            ]
+            outer_wrapper_sites = []
+        elif debug_filter == "wrappers-only":
+            outer_direct_sites = []
+        elif debug_filter == "no-wrappers":
+            outer_wrapper_sites = []
+        elif debug_filter == "no-gift":
+            outer_direct_sites = [site for site in outer_direct_sites if not is_gift_direct(site)]
+        elif debug_filter == "no-alt":
+            outer_direct_sites = [site for site in outer_direct_sites if not is_starter_alt(site)]
+        elif debug_filter == "no-direct":
+            outer_direct_sites = [site for site in outer_direct_sites if not is_starter_direct(site)]
+        elif debug_filter == "direct-alt":
+            outer_direct_sites = [
+                site for site in outer_direct_sites
+                if is_starter_direct(site) or is_starter_alt(site)
+            ]
+            outer_wrapper_sites = []
+        elif debug_filter != "all":
+            raise ValueError(
+                "Unsupported KIRAPATCH_DEBUG_FRLG_STARTER_FILTER value. "
+                "Use one of: all, direct-only, alt-only, gift-only, gift-wrappers, gift-wrappers-primary, gift-direct, wrappers-only, "
+                "no-wrappers, no-gift, no-alt, no-direct, direct-alt."
+            )
+    skip_wrapper_sites = outer_wrapper_sites
+    # Ruby starters already have a dedicated direct CreateMon hook. Keeping the
+    # fixed-personality wrappers out of the reroll path avoids the intro
+    # Poochyena getting force-rerolled while we harden the starter path.
+    if spec.game_code == "AXVE":
+        outer_wrapper_sites = []
+        skip_wrapper_sites = wrapper_sites
+    skip_return_addrs = []
+    if skip_wrapper_returns:
+        skip_return_addrs.extend(
+            ((ROM_EXEC_BASE + hook_callsite) | 1) & 0xFFFFFFFF
+            for _, hook_callsite, _ in skip_wrapper_sites
+        )
+    skip_direct_sites = outer_direct_sites
+    if skip_exclude_gift_direct:
+        skip_direct_sites = [
+            site for site in skip_direct_sites
+            if site.name != "FRLG script GiveMon wrapper"
+        ]
     skip_return_addrs.extend(
         ((ROM_EXEC_BASE + site.skip_return_offset) | 1) & 0xFFFFFFFF
-        for site in outer_direct_sites
+        for site in skip_direct_sites
     )
     skip_caller_returns = tuple(skip_return_addrs)
     primary_create_box_call = primary_hook_callsite - 4
@@ -1275,9 +1857,28 @@ def patch_data_canonical(data: bytearray, spec: RomSpec, plan: OddsPlan) -> list
     hook_sites: list[tuple[int, int, int, int, tuple[int, ...]]] = [
         (primary_hook_callsite, primary_retry_target, 5, 6, (0x4640, 0x2138))
     ]
-    hook_sites.extend(find_secondary_create_box_wrapper_sites(data, primary_create_box_call))
+    if not disable_secondary_wrapper_hooks:
+        hook_sites.extend(find_secondary_create_box_wrapper_sites(data, primary_create_box_call))
 
     changes: list[str] = []
+    if debug_filter and spec.game_code in {"BPRE", "BPGE"}:
+        changes.append(f"[debug] FRLG starter hook filter: {debug_filter}")
+    if primary_skip_mode != "all":
+        changes.append(f"[debug] primary CreateMon skip mode: {primary_skip_mode}")
+    if disable_secondary_wrapper_hooks:
+        changes.append("[debug] secondary CreateBoxMon wrapper hooks disabled")
+    if skip_exclude_gift_direct:
+        changes.append("[debug] primary skip excludes FRLG GiveMon return")
+    if not skip_wrapper_returns:
+        changes.append("[debug] primary skip excludes wrapper returns")
+    if trace_frlg_gift:
+        changes.append("[debug] FRLG GiveMon hook trace enabled")
+    if trace_primary_hook:
+        changes.append("[debug] primary CreateMon hook trace enabled")
+    if trace_frlg_starters:
+        changes.append("[debug] FRLG starter outer hook trace enabled")
+    if include_gift_direct:
+        changes.append("[debug] FRLG GiveMon outer hook explicitly included")
     rerolls_remaining = max(0, plan.reroll_attempts - 1)
 
     for hook_callsite, retry_target, counter_sp_word, restore_r3_sp_word, resume_halfwords in hook_sites:
@@ -1316,6 +1917,8 @@ def patch_data_canonical(data: bytearray, spec: RomSpec, plan: OddsPlan) -> list
             restore_r3_sp_word=restore_r3_sp_word,
             resume_halfwords=resume_halfwords,
             skip_caller_returns=skip_caller_returns,
+            skip_mode=primary_skip_mode,
+            debug_trace_tag=DEBUG_TRACE_TAG_PRIMARY if trace_primary_hook else None,
         )
 
         data[cave_offset : cave_offset + len(hook)] = hook
@@ -1360,8 +1963,33 @@ def patch_data_canonical(data: bytearray, spec: RomSpec, plan: OddsPlan) -> list
             retry_target=site.retry_target,
             rerolls_remaining=rerolls_remaining,
             counter_sp_word=site.counter_sp_word,
+            counter_ewram_addr=site.counter_ewram_addr,
             resume_halfwords=site.resume_halfwords,
             pokemon_reg=site.pokemon_reg,
+            restore_sp_word_from_reg=site.restore_sp_word_from_reg,
+            counter_reg=site.counter_reg,
+            retry_call_target=site.retry_call_target,
+            retry_arg1_reg=site.retry_arg1_reg,
+            retry_arg2_reg=site.retry_arg2_reg,
+            retry_arg3_imm=site.retry_arg3_imm,
+            debug_trace_tag=(
+                DEBUG_TRACE_TAG_GIFT
+                if trace_frlg_gift and site.name == "FRLG script GiveMon wrapper"
+                else DEBUG_TRACE_TAG_STARTER_DIRECT
+                if trace_frlg_starters and site.name == "FRLG starter direct CreateMon caller"
+                else DEBUG_TRACE_TAG_STARTER_ALT
+                if trace_frlg_starters and site.name == "FRLG alternate starter CreateMon caller"
+                else None
+            ),
+            debug_trace_addr=(
+                DEBUG_TRACE_EWRAM_ADDR
+                if trace_frlg_gift and site.name == "FRLG script GiveMon wrapper"
+                else DEBUG_TRACE_STARTER_DIRECT_EWRAM_ADDR
+                if trace_frlg_starters and site.name == "FRLG starter direct CreateMon caller"
+                else DEBUG_TRACE_STARTER_ALT_EWRAM_ADDR
+                if trace_frlg_starters and site.name == "FRLG alternate starter CreateMon caller"
+                else None
+            ),
         )
         data[cave_offset : cave_offset + len(hook)] = hook
         data[site.hook_callsite : site.hook_callsite + 4] = encode_thumb_bl(site.hook_callsite, cave_offset)
@@ -1608,6 +2236,8 @@ def patch_rom(
     print(f"  Effective shiny bits: {plan.effective_bits}")
     print(f"  Effective odds: ~1/{plan.effective_one_in:.3f}")
     if plan.applied_mode == "canonical":
+        support_tier, support_warning = describe_canonical_support_tier(plan.requested_odds)
+        print(f"  Support tier: {support_tier}")
         print(f"  Canonical reroll attempts: {plan.reroll_attempts} total PID roll(s)")
         if plan.reroll_capped:
             if plan.requested_odds == 1:
@@ -1620,6 +2250,8 @@ def patch_rom(
                     "  Warning: requested odds required too many PID rerolls; "
                     f"capped at {MAX_CANONICAL_REROLL_ATTEMPTS} rolls for stability."
                 )
+        if support_warning:
+            print(f"  Warning: {support_warning}")
         print("  Compatibility: PKHeX-canonical shiny logic preserved.")
     elif not (plan.effective_bits == 16 and plan.threshold == BASE_THRESHOLD):
         print("  Compatibility: non-vanilla shiny logic; PKHeX will only flag PID-valid shinies.")
@@ -1722,4 +2354,6 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
 
