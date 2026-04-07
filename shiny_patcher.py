@@ -1771,13 +1771,13 @@ def patch_data_canonical(data: bytearray, spec: RomSpec, plan: OddsPlan) -> list
         return site.name == "FRLG script GiveMon wrapper"
 
     if spec.game_code == "BPRE" and not debug_filter:
-        # FireRed starter signoff now lands cleanly when the GiveMon caller
-        # owns the outer reroll path while the primary CreateMon hook still
-        # observes wrapper returns. Keep the legacy starter-direct / alt
-        # callers available for debugging only; the shipping path should not
-        # reintroduce their bad final handoff.
+        # FireRed starter signoff should stay on the GiveMon-owned outer reroll
+        # path. Letting the primary CreateMon hook observe wrapper returns can
+        # still produce mixed legality on otherwise identical 1/256 shiny runs,
+        # so keep wrapper ownership self-contained in the shipping path. The
+        # legacy starter-direct / alt callers remain available only for
+        # debugging.
         outer_direct_sites = [site for site in outer_direct_sites if is_gift_direct(site)]
-        skip_wrapper_returns = False
 
     if debug_filter and spec.game_code in {"BPRE", "BPGE"}:
 

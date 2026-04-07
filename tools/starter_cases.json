@@ -60,7 +60,7 @@
         "memory_retry_timeout": 20.0,
         "memory_retry_interval": 0.25,
         "wait_for_party_match": false,
-        "prefer_method1_generic": false
+        "prefer_method1_generic": true
       }
     }
   },
