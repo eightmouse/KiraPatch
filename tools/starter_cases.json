@@ -91,7 +91,9 @@
       "256": {
         "presses": 16,
         "press_interval": 0.45,
-        "reset_wait": 2.4
+        "reset_wait": 2.4,
+        "launch_jitter_step_ms": 17,
+        "prefer_method1_generic": true
       }
     }
   },
